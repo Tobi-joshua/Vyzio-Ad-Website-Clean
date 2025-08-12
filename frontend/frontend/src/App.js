@@ -27,9 +27,9 @@ import Buyers_Ads_Details from './pages/BuyersPages/Buyer_Ads_Details';
 import BuyerJobApplicationForm from './pages/BuyersPages/Buyer_Ads_Applications';
 import BuyerApplicationsList from './pages/BuyersPages/BuyersApplicationsList';
 import BuyerSavedAdsList from './pages/BuyersPages/BuyerSavedAds';
-import BuyerViewHistoryList from './pages/BuyerPages/Buyer_ViewHistory';
-
-
+import BuyerViewHistoryList from './pages/BuyersPages/BuyerViewHistoryList';
+import HelpCenter from './pages/BuyersPages/HelpCenter';
+import BuyerAccountSettings from './pages/BuyersPages/Buyers_Account_Settings';
 
 
 
@@ -78,6 +78,8 @@ function App() {
               <Route path='my-applications' element={<BuyerApplicationsList/>} />
               <Route path='my-saved-ads' element={<BuyerSavedAdsList/>} />
               <Route path='view-history' element={<BuyerViewHistoryList/>} />
+              <Route path='help-center' element={<HelpCenter/>} />
+              <Route path='account-settings' element={<BuyerAccountSettings/>} />
             </Route>
 
             {/* Other routes */}

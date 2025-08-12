@@ -349,14 +349,14 @@ export default function BuyerAppBar({
                   <ListItemText primary="My Applications" />
                 </ListItemButton>
 
-                <ListItemButton onClick={() => { navigate('/buyers/help'); setIsDrawerOpen(false); }}>
+                <ListItemButton onClick={() => { navigate('/buyers/help-center'); setIsDrawerOpen(false); }}>
                   <ListItemIcon><HelpOutlineIcon /></ListItemIcon>
                   <ListItemText primary="Help Center" />
                 </ListItemButton>
 
                 <Divider sx={{ my: 1 }} />
 
-                <ListItemButton onClick={() => { navigate('/buyers/account'); setIsDrawerOpen(false); }}>
+                <ListItemButton onClick={() => { navigate('/buyers/account-settings'); setIsDrawerOpen(false); }}>
                   <ListItemIcon><SettingsIcon /></ListItemIcon>
                   <ListItemText primary="Account Settings" />
                 </ListItemButton>

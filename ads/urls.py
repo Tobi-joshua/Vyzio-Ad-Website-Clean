@@ -70,7 +70,6 @@ urlpatterns = [
     path('applications/', views.application_create, name='application-create'),
     path('buyer-applications-list/', views.buyer_applications_list, name='buyer_applications_list'),
     path('buyer/<int:buyer_id>/view-history/', views.buyer_view_history, name='buyer-view-history'),
-
-
+    path('buyer/account-settings/', views.buyer_account_settings, name='buyer-account-settings'),
 
 ]

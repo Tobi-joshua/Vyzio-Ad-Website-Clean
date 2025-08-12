@@ -1197,3 +1197,24 @@ def buyer_view_history(request, buyer_id):
     queryset = ViewHistory.objects.filter(user=buyer).select_related('ad').order_by('-viewed_at')
     serializer = ViewHistorySerializer(queryset, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def buyer_account_settings(request):
+    user = request.user
+    if not user.is_buyer:
+        return Response({'detail': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+    
+    if request.method == 'GET':
+        serializer = UserAccountSerializer(user)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = UserAccountSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

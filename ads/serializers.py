@@ -200,8 +200,6 @@ def validate_email(value):
             'Email already exists. Please reset your password or use a new email to signup')
     return value
 
-
-
 class UserSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(required=True, validators=[validate_email])
     password1 = serializers.CharField(write_only=True, required=True, validators=[validate_password])
@@ -468,3 +466,22 @@ class ViewHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ViewHistory
         fields = ['id', 'ad', 'viewed_at']
+
+
+
+class UserAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'username',
+            'email',
+            'first_name',
+            'last_name',
+            'phone',
+            'country',
+            'bio',
+            'preferred_currency',
+            'avatar_update', 
+        ]
+        read_only_fields = ['id', 'username', 'email']

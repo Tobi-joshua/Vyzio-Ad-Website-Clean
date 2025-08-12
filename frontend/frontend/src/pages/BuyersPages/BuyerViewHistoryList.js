@@ -21,12 +21,14 @@ import CloseIcon from "@mui/icons-material/Close";
 import { useTheme } from "@mui/material/styles";
 import { BuyerDashboardContext } from "./index";
 import { API_BASE_URL } from "../../constants";
+import { useNavigate } from "react-router-dom";
 
 export default function BuyerViewHistoryList() {
   const { userId, token } = useContext(BuyerDashboardContext);
   const [viewHistory, setViewHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const navigate = useNavigate();
 
   // Modal state for ad details
   const [selectedAd, setSelectedAd] = useState(null);
@@ -204,15 +206,12 @@ export default function BuyerViewHistoryList() {
               </Typography>
 
               <Box mt={2}>
-                <Link
-                  href={`buyers/ads/${selectedAd.id}/details`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  underline="hover"
-                  color="primary"
-                >
-                  Go to Ad Page
-                </Link>
+                 <Button
+            variant="contained"
+            onClick={() => navigate(`/buyers/ads/${selectedAd.id}/details`)}
+          >
+            Go to Ad Page
+          </Button>
               </Box>
             </>
           ) : (
