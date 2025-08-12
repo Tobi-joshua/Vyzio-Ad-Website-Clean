@@ -69,8 +69,8 @@ urlpatterns = [
     path('buyer/<int:buyer_id>/saved-ads/', views.buyer_saved_ads, name='buyer_saved_ads'),
     path('applications/', views.application_create, name='application-create'),
     path('buyer-applications-list/', views.buyer_applications_list, name='buyer_applications_list'),
+    path('buyer/<int:buyer_id>/view-history/', views.buyer_view_history, name='buyer-view-history'),
 
 
 
-    
 ]

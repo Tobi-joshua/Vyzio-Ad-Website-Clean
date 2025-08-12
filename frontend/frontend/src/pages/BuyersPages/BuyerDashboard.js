@@ -85,7 +85,7 @@ export default function BuyerDashboard() {
                 title: "Saved Ads",
                 value: stats.saved_ads_count || 0,
                 cta: "View saved ads",
-                onClick: () => navigate("/buyers/saved-ads"),
+                onClick: () => navigate("/buyers/my-saved-ads"),
               },
               {
                 title: "Messages",
@@ -97,7 +97,7 @@ export default function BuyerDashboard() {
                 title: "Recently Viewed",
                 value: stats.recently_viewed_count || 0,
                 cta: "See recent",
-                onClick: () => navigate("/buyers/recently-viewed"),
+                onClick: () => navigate("/buyers/view-history"),
               },
             ].map((s, idx) => (
               <Grid
@@ -179,9 +179,10 @@ export default function BuyerDashboard() {
               <Stack spacing={1}>
                 {[
                   { label: "Browse categories", path: "/buyers/categories" },
-                  { label: "Saved ads", path: "/buyers/saved-ads" },
+                  { label: "My Saved ads", path: "/buyers/my-saved-ads" },
+                  { label: "My Applications", path: "/buyers/my-applications" },
+                  { label: "My Messages", path: "/buyers/messages-list" },
                   { label: "My orders", path: "/buyers/orders" },
-                  { label: "Messages", path: "/buyers/messages-list" },
                 ].map(({ label, path }) => (
                   <Button
                     key={label}

@@ -418,3 +418,53 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         return super().create(validated_data)
+
+
+class AdNestedSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Ad
+        fields = ['id', 'title', 'currency']
+
+
+class ApplicationDetailsSerializer(serializers.ModelSerializer):
+    applicant = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    ad = AdNestedSerializer(read_only=True)  
+    ad_id = serializers.PrimaryKeyRelatedField(
+        queryset=Ad.objects.all(), source='ad', write_only=True
+    )
+
+    class Meta:
+        model = Application
+        fields = [
+            "id",
+            "ad",
+            "ad_id", 
+            "applicant",
+            "cover_letter",
+            "resume",
+            "resume_url",
+            "phone_number",
+            "portfolio_url",
+            "linkedin_url",
+            "expected_salary",
+            "available_start_date",
+            "is_willing_to_relocate",
+            "notes",
+            "status",
+            "applied_at",
+            "updated_at",
+        ]
+        read_only_fields = ("status", "applied_at", "updated_at", "resume_url")
+
+
+class SimpleAdSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Ad
+        fields = ['id', 'title', 'price', 'currency', 'header_image_url']
+
+class ViewHistorySerializer(serializers.ModelSerializer):
+    ad = SimpleAdSerializer(read_only=True)
+
+    class Meta:
+        model = ViewHistory
+        fields = ['id', 'ad', 'viewed_at']

@@ -26,6 +26,13 @@ import BuyersAdsByCategory from "./pages/BuyersPages/Buyers_Ads_By_Categories";
 import Buyers_Ads_Details from './pages/BuyersPages/Buyer_Ads_Details';
 import BuyerJobApplicationForm from './pages/BuyersPages/Buyer_Ads_Applications';
 import BuyerApplicationsList from './pages/BuyersPages/BuyersApplicationsList';
+import BuyerSavedAdsList from './pages/BuyersPages/BuyerSavedAds';
+import BuyerViewHistoryList from './pages/BuyerPages/Buyer_ViewHistory';
+
+
+
+
+
 
 // Components
 import Footer from "./components/Footer";
@@ -67,8 +74,10 @@ function App() {
               <Route path="ads/:id/details" element={<Buyers_Ads_Details />} />
               <Route path="jobs/:id/apply" element={<BuyerJobApplicationForm />} />
               <Route path="training/:id/apply" element={<BuyerJobApplicationForm />} />
-               <Route path="apply/:id" element={<BuyerJobApplicationForm />} />
-               <Route path='my-applications' element={<BuyerApplicationsList/>} />
+              <Route path="apply/:id" element={<BuyerJobApplicationForm />} />
+              <Route path='my-applications' element={<BuyerApplicationsList/>} />
+              <Route path='my-saved-ads' element={<BuyerSavedAdsList/>} />
+              <Route path='view-history' element={<BuyerViewHistoryList/>} />
             </Route>
 
             {/* Other routes */}

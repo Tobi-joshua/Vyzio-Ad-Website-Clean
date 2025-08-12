@@ -12,15 +12,30 @@ import {
   DialogContent,
   IconButton,
   useMediaQuery,
-  Button,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import { useTheme } from "@mui/material/styles";
 import { BuyerDashboardContext } from "./index";
 import { API_BASE_URL } from "../../constants";
 
+// Helper to get color based on status
+const getStatusColor = (status) => {
+  switch (status) {
+    case "pending":
+      return "#fbc02d"; // yellow
+    case "reviewed":
+      return "#0288d1"; // blue
+    case "accepted":
+      return "#388e3c"; // green
+    case "rejected":
+      return "#d32f2f"; // red
+    default:
+      return "#757575"; // grey
+  }
+};
+
 export default function BuyerApplicationsList() {
-  const { userId, token } = useContext(BuyerDashboardContext);
+  const { token } = useContext(BuyerDashboardContext);
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -32,7 +47,6 @@ export default function BuyerApplicationsList() {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
 
-  // Fetch applications on mount
   useEffect(() => {
     if (!token) return;
     setLoading(true);
@@ -55,8 +69,6 @@ export default function BuyerApplicationsList() {
       });
   }, [token]);
 
-
-  // Handle opening modal
   const handleOpenModal = (application) => {
     setSelectedApplication(application);
     setOpenModal(true);
@@ -93,7 +105,11 @@ export default function BuyerApplicationsList() {
 
   return (
     <Box sx={{ maxWidth: 700, mx: "auto", mt: 4 }}>
-      <Typography variant="h4" gutterBottom sx={{ fontWeight: "bold" }}>
+      <Typography
+        variant="h4"
+        gutterBottom
+        sx={{ fontWeight: 700, mb: 2, color: "darkblue" }}
+      >
         My Applications
       </Typography>
 
@@ -111,12 +127,51 @@ export default function BuyerApplicationsList() {
                 "&:hover": {
                   backgroundColor: "#f5f5f5",
                 },
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                py: 1.5,
+                px: 2,
               }}
             >
-              <ListItemText
-                primary={`${app.ad.title} — Status: ${app.status}`}
-                secondary={`Applied on: ${new Date(app.applied_at).toLocaleDateString()}`}
-              />
+              <Box
+                sx={{
+                  width: "100%",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <Typography variant="subtitle1" sx={{ fontWeight: "bold" }}>
+                  {app.ad.title}
+                </Typography>
+
+                {/* Status badge */}
+                <Box
+                  sx={{
+                    px: 1.5,
+                    py: 0.5,
+                    borderRadius: "12px",
+                    fontWeight: "bold",
+                    fontSize: 12,
+                    color: "white",
+                    bgcolor: getStatusColor(app.status),
+                    textTransform: "capitalize",
+                    minWidth: 80,
+                    textAlign: "center",
+                  }}
+                >
+                  {app.status}
+                </Box>
+              </Box>
+
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 0.5 }}
+              >
+                Applied on: {new Date(app.applied_at).toLocaleDateString()}
+              </Typography>
             </ListItem>
             <Divider />
           </React.Fragment>
@@ -155,7 +210,20 @@ export default function BuyerApplicationsList() {
                 Ad Title: {selectedApplication.ad.title}
               </Typography>
               <Typography gutterBottom>
-                <strong>Status:</strong> {selectedApplication.status}
+                <strong>Status:</strong>{" "}
+                <Box
+                  component="span"
+                  sx={{
+                    px: 1,
+                    py: 0.3,
+                    borderRadius: "8px",
+                    color: "white",
+                    bgcolor: getStatusColor(selectedApplication.status),
+                    textTransform: "capitalize",
+                  }}
+                >
+                  {selectedApplication.status}
+                </Box>
               </Typography>
               <Typography gutterBottom>
                 <strong>Cover Letter:</strong>{" "}
@@ -196,7 +264,7 @@ export default function BuyerApplicationsList() {
               <Typography gutterBottom>
                 <strong>Expected Salary:</strong>{" "}
                 {selectedApplication.expected_salary
-                  ? `$${selectedApplication.expected_salary}`
+                  ? `${selectedApplication.expected_salary} ${selectedApplication.ad.currency}`
                   : "N/A"}
               </Typography>
               <Typography gutterBottom>

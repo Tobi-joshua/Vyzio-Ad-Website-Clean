@@ -103,7 +103,7 @@ export default function BuyerOrders() {
                 />
                 {order.ad_id && (
                   <Button
-                    href={`/ads/${order.ad_id}`}
+                    href={`buyers/ads/${order.ad_id}/details`}
                     variant="outlined"
                     size="small"
                   >

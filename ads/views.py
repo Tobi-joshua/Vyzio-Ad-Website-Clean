@@ -1083,20 +1083,6 @@ def record_ad_view(request, ad_id):
     }, status=status.HTTP_201_CREATED)
 
 
-@api_view(["GET"])
-def ad_view_history(request, ad_id):
-    """
-    Optional: return recent view history for an ad (admin/owners only if desired)
-    """
-    ad = get_object_or_404(Ad, id=ad_id)
-    qs = ViewHistory.objects.filter(ad=ad).select_related('user').order_by('-viewed_at')[:100]
-    data = [
-        {"id": v.id, "user_id": v.user.id, "username": v.user.username, "viewed_at": v.viewed_at.isoformat()}
-        for v in qs
-    ]
-    return Response(data, status=status.HTTP_200_OK)
-
-
 
 @transaction.atomic
 @api_view(["POST", "DELETE"])
@@ -1164,7 +1150,7 @@ def application_create(request):
 def buyer_applications_list(request):
     user = request.user
     applications = Application.objects.filter(applicant=user).select_related('ad')
-    serializer = ApplicationSerializer(applications, many=True)
+    serializer = ApplicationDetailsSerializer(applications, many=True)
     return Response(serializer.data)
 
 
@@ -1177,6 +1163,37 @@ def buyer_application_detail(request, pk):
     except Application.DoesNotExist:
         return Response({'detail': 'Application not found.'}, status=status.HTTP_404_NOT_FOUND)
     
-    serializer = ApplicationSerializer(application)
+    serializer = ApplicationDetailsSerializer(application)
     return Response(serializer.data)
 
+
+
+@api_view(["GET"])
+def ad_view_history(request, ad_id):
+    """
+    Optional: return recent view history for an ad (admin/owners only if desired)
+    """
+    ad = get_object_or_404(Ad, id=ad_id)
+    qs = ViewHistory.objects.filter(ad=ad).select_related('user').order_by('-viewed_at')[:100]
+    data = [
+        {"id": v.id, "user_id": v.user.id, "username": v.user.username, "viewed_at": v.viewed_at.isoformat()}
+        for v in qs
+    ]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def buyer_view_history(request, buyer_id):
+    """
+    GET /api/buyer/<buyer_id>/view-history/
+    Returns the list of ads viewed by the buyer (user).
+    """
+    if request.user.id != int(buyer_id):
+        return Response({"detail": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+
+    buyer = get_object_or_404(User, id=buyer_id)
+    queryset = ViewHistory.objects.filter(user=buyer).select_related('ad').order_by('-viewed_at')
+    serializer = ViewHistorySerializer(queryset, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
