@@ -68,4 +68,9 @@ urlpatterns = [
     path('ads/<int:ad_id>/save/', views.save_unsave_ad, name='save_unsave_ad'),
     path('buyer/<int:buyer_id>/saved-ads/', views.buyer_saved_ads, name='buyer_saved_ads'),
     path('applications/', views.application_create, name='application-create'),
+    path('buyer-applications-list/', views.buyer_applications_list, name='buyer_applications_list'),
+
+
+
+    
 ]

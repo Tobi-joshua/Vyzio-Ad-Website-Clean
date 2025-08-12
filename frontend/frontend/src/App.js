@@ -25,6 +25,7 @@ import BuyerNotifications from "./pages/BuyersPages/BuyersNotifications";
 import BuyersAdsByCategory from "./pages/BuyersPages/Buyers_Ads_By_Categories";
 import Buyers_Ads_Details from './pages/BuyersPages/Buyer_Ads_Details';
 import BuyerJobApplicationForm from './pages/BuyersPages/Buyer_Ads_Applications';
+import BuyerApplicationsList from './pages/BuyersPages/BuyersApplicationsList';
 
 // Components
 import Footer from "./components/Footer";
@@ -67,7 +68,7 @@ function App() {
               <Route path="jobs/:id/apply" element={<BuyerJobApplicationForm />} />
               <Route path="training/:id/apply" element={<BuyerJobApplicationForm />} />
                <Route path="apply/:id" element={<BuyerJobApplicationForm />} />
-
+               <Route path='my-applications' element={<BuyerApplicationsList/>} />
             </Route>
 
             {/* Other routes */}

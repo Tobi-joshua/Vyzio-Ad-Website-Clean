@@ -1156,3 +1156,27 @@ def application_create(request):
         serializer.save(applicant=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def buyer_applications_list(request):
+    user = request.user
+    applications = Application.objects.filter(applicant=user).select_related('ad')
+    serializer = ApplicationSerializer(applications, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def buyer_application_detail(request, pk):
+    user = request.user
+    try:
+        application = Application.objects.get(pk=pk, applicant=user)
+    except Application.DoesNotExist:
+        return Response({'detail': 'Application not found.'}, status=status.HTTP_404_NOT_FOUND)
+    
+    serializer = ApplicationSerializer(application)
+    return Response(serializer.data)
+
