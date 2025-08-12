@@ -32,6 +32,8 @@ import HelpCenter from './pages/BuyersPages/HelpCenter';
 import BuyerAccountSettings from './pages/BuyersPages/Buyers_Account_Settings';
 
 
+// Seller Pages wrapper and nested pages
+import SellersPagesWrapper from "./pages/SellersPages/index";
 
 
 // Components
@@ -81,6 +83,26 @@ function App() {
               <Route path='help-center' element={<HelpCenter/>} />
               <Route path='account-settings' element={<BuyerAccountSettings/>} />
             </Route>
+
+
+
+          {/* Buyer routes wrapped inside context/layout wrapper */}
+            <Route path="/sellers" element={<SellersPagesWrapper/>}>
+              <Route path="dashboard" element={<BuyerDashboard />} />
+              <Route path="categories" element={<BuyerAdsCategories />} />
+              <Route path="messages-list" element={<BuyerMessages/>} />
+              <Route path="orders" element={<BuyerOrders />} />
+              <Route path="notifications-list" element={<BuyerNotifications />} />
+              <Route path="categories/:id/:name/ads" element={<BuyersAdsByCategory />} />
+              <Route path="ads/:id/details" element={<Buyers_Ads_Details />} />
+              <Route path="apply/:id" element={<BuyerJobApplicationForm />} />
+              <Route path='my-applications' element={<BuyerApplicationsList/>} />
+              <Route path='my-saved-ads' element={<BuyerSavedAdsList/>} />
+              <Route path='view-history' element={<BuyerViewHistoryList/>} />
+              <Route path='help-center' element={<HelpCenter/>} />
+              <Route path='account-settings' element={<BuyerAccountSettings/>} />
+            </Route>
+
 
             {/* Other routes */}
             <Route path="/login" element={<Login />} />

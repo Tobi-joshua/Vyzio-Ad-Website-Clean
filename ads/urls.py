@@ -72,4 +72,10 @@ urlpatterns = [
     path('buyer/<int:buyer_id>/view-history/', views.buyer_view_history, name='buyer-view-history'),
     path('buyer/account-settings/', views.buyer_account_settings, name='buyer-account-settings'),
 
+
+    path('sellers-dashboard/', views.seller_dashboard, name='seller-dashboard'),
+
+
+
+
 ]

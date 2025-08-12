@@ -26,8 +26,6 @@ import { BuyerDashboardContext } from "./index";
 export default function BuyerDashboard() {
   const theme = useTheme();
   const navigate = useNavigate();
-
-  // Consume context here
   const {
     firstName,
     userAvatar,

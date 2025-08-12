@@ -66,7 +66,8 @@ from drf_yasg.utils import swagger_auto_schema
 from google.oauth2 import id_token
 from google.cloud import tasks_v2
 from google.auth.transport import requests as google_requests
-from django.db.models import Q
+from django.utils import timezone
+from django.db.models import Count, Q, Sum
 
 """
 Project Specific Imports
@@ -1218,3 +1219,139 @@ def buyer_account_settings(request):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+
+
+
+
+
+
+
+
+
+""" Sellers Homepage """
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def seller_dashboard(request):
+    user = request.user
+
+    if not getattr(user, "is_seller", False):
+        return Response({"error": "Only sellers can access this dashboard"}, status=403)
+
+    now = timezone.now()
+    # start of current month for "this month" metric
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # --- stats ---
+    total_active_ads = Ad.objects.filter(user=user, status='active').count()
+    total_views_this_month = ViewHistory.objects.filter(ad__user=user, viewed_at__gte=start_of_month).count()
+    # messages involving this user (as seller or buyer)
+    messages_count = Message.objects.filter(Q(chat__buyer=user) | Q(chat__seller=user)).count()
+    # "leads" = distinct chats for ads owned by this seller that have at least one message
+    total_leads = Message.objects.filter(chat__ad__user=user).values('chat').distinct().count()
+
+    # --- my ads (limit 50 for paging; you can change) ---
+    # annotate each ad with a view count (from ViewHistory)
+    my_ads_qs = Ad.objects.filter(user=user).annotate(view_count=Count('viewhistory')).order_by('-created_at')[:50]
+    my_ads = []
+    for a in my_ads_qs:
+        my_ads.append({
+            "id": a.id,
+            "title": a.title,
+            "price": str(a.price) if a.price is not None else None,
+            "currency": getattr(a, "currency", None),
+            "header_image_url": a.header_image_url,
+            "status": a.status,
+            "is_active": a.is_active,
+            "view_count": a.view_count,
+            "created_at": a.created_at.isoformat() if getattr(a, "created_at", None) else None,
+        })
+
+    # --- performance insights ---
+    # most viewed ad (for this seller)
+    most_viewed = Ad.objects.filter(user=user).annotate(views=Count('viewhistory')).order_by('-views').first()
+    if most_viewed:
+        most_viewed_ad = {
+            "id": most_viewed.id,
+            "title": most_viewed.title,
+            "header_image_url": most_viewed.header_image_url,
+            "views": most_viewed.views,
+            "status": most_viewed.status
+        }
+    else:
+        most_viewed_ad = None
+
+    # conversion: messages about seller's ads / total views on seller's ads
+    messages_about_ads = Message.objects.filter(chat__ad__user=user).count()
+    total_views_all = ViewHistory.objects.filter(ad__user=user).count()
+    conversion_rate = 0.0
+    if total_views_all > 0:
+        conversion_rate = (messages_about_ads / total_views_all) * 100
+    # format to 2 decimal places
+    conversion_rate = round(conversion_rate, 2)
+
+    # --- recent messages (buyer inquiries) --- latest 10 messages for this seller's ads
+    recent_messages_qs = Message.objects.filter(chat__ad__user=user).select_related('sender', 'chat__ad').order_by('-created_at')[:10]
+    recent_messages = []
+    for msg in recent_messages_qs:
+        recent_messages.append({
+            "id": msg.id,
+            "text": msg.text,
+            "created_at": msg.created_at.isoformat() if getattr(msg, "created_at", None) else None,
+            "sender_id": msg.sender.id if getattr(msg, "sender", None) else None,
+            "sender_username": msg.sender.username if getattr(msg, "sender", None) else None,
+            "ad_id": getattr(msg.chat.ad, "id", None),
+            "ad_title": getattr(msg.chat.ad, "title", None),
+            "chat_id": msg.chat.id if getattr(msg, "chat", None) else None,
+        })
+
+
+    orders = []
+    earnings_total = None
+    try:
+        orders_qs = Order.objects.filter(ad__user=user).order_by('-created_at')[:5]
+        orders = [
+            {
+                "id": o.id,
+                "ad_id": getattr(o, "ad_id", None),
+                "total": str(o.total) if getattr(o, "total", None) is not None else None,
+                "status": getattr(o, "status", None),
+                "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None
+            } for o in orders_qs
+        ]
+        agg = Order.objects.filter(ad__user=user).aggregate(total_earnings=Sum('total'))
+        earnings_total = str(agg['total_earnings']) if agg.get('total_earnings') is not None else None
+    except Exception:
+        orders = []
+        earnings_total = None
+
+    data = {
+        "user": {
+            "firstname": user.first_name,
+            "avatar": user.avatar_url or 'https://ik.imagekit.io/ooiob6xdv/boy.png?updatedAt=1754917450889',
+            "email": user.email,
+            "userId": user.id,
+        },
+        "stats": {
+            "total_active_ads": total_active_ads,
+            "total_views_this_month": total_views_this_month,
+            "messages_count": messages_count,
+            "total_leads": total_leads,
+        },
+        "my_ads": my_ads,
+        "performance_insights": {
+            "most_viewed_ad": most_viewed_ad,
+            "conversion_rate_percent": conversion_rate, 
+            "messages_about_ads": messages_about_ads,
+            "total_views_all_time": total_views_all,
+        },
+        "messages": recent_messages,
+        "orders": orders,
+        "earnings_total": earnings_total,
+    }
+
+    return Response(data)
