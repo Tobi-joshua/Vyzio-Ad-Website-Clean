@@ -1,0 +1,13 @@
+# Ignore Firebase service account keys
+firebase/*.json
+
+# Python environment
+env/
+*.pyc
+__pycache__/
+
+# SQLite DB file
+db.sqlite3
+
+# Media uploads
+media/
