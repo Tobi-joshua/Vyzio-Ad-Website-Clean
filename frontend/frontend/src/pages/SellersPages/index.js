@@ -26,6 +26,7 @@ export default function SellersPagesWrapper() {
   const [email, setEmail] = useState("");
   const [userAvatar, setUserAvatar] = useState("");
   const [userId, setUserId] = useState(null);
+  const [user,setUser] = useState(null);
   const [notificationCount, setNotificationCount] = useState(0);
 
   const notificationAudio = useRef(null);
@@ -59,6 +60,7 @@ export default function SellersPagesWrapper() {
       .then((data) => {
         setDashboardData(data || {});
         setFirstName(data.user?.firstname || "");
+        setUser(data?.user);
         setEmail(data.user?.email || "");
         setUserAvatar(data.user?.avatar || data.user?.avatar_url || "");
         setUserId(data.user?.userId || null);
@@ -109,7 +111,7 @@ export default function SellersPagesWrapper() {
     const mode = theme.palette.mode || "light";
     return mode === "dark"
       ? "linear-gradient(180deg,#071120 0%, #0b1724 100%)"
-      : "linear-gradient(180deg,#f6f9fc 0%, #97999bff 100%)";
+      : "linear-gradient(180deg,#f6f9fc 0%, #ffffffff 100%)";
   };
 
   if (loading || authLoading) {
@@ -123,6 +125,7 @@ export default function SellersPagesWrapper() {
   return (
     <SellerDashboardContext.Provider
       value={{
+        user,
         firstName,
         email,
         userAvatar,

@@ -28,6 +28,7 @@ import NotificationsIcon from '@mui/icons-material/Notifications';
 import ShoppingBagIcon from '@mui/icons-material/ShoppingBag';
 import ChatIcon from '@mui/icons-material/Chat';
 import CategoryIcon from '@mui/icons-material/Category';
+import MonetizationOnIcon from '@mui/icons-material/MonetizationOn';
 import PostAddIcon from '@mui/icons-material/PostAdd';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
@@ -101,57 +102,10 @@ export default function BuyerAppBar({
     } finally {
       TokenStorage.clear();
       setIsDrawerOpen(false);
-      navigate('/login');
+      navigate('/');
     }
   };
 
-  // Fetch ads for autocomplete
-  useEffect(() => {
-    let mounted = true;
-    fetch(`${API_BASE_URL}/api/ads/`)
-      .then((res) => res.json())
-      .then((data) => mounted && setAllAds(data || []))
-      .catch((err) => {
-        console.error('Failed to load ads:', err);
-        if (mounted) setAllAds([]);
-      });
-    return () => { mounted = false; };
-  }, []);
-
-  // Search filter
-  useEffect(() => {
-    if (!query.trim()) {
-      setResults([]);
-      setShowSuggestions(false);
-      return;
-    }
-    const lowerQuery = query.toLowerCase();
-    const filtered = (allAds || []).filter(
-      ({ title, category, country, city }) =>
-        title?.toLowerCase().includes(lowerQuery) ||
-        category?.name.toLowerCase().includes(lowerQuery) ||
-        country?.toLowerCase().includes(lowerQuery) ||
-        city?.toLowerCase().includes(lowerQuery)
-    );
-    setResults(filtered);
-    setShowSuggestions(true);
-  }, [query, allAds]);
-
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (boxRef.current && !boxRef.current.contains(e.target)) {
-        setShowSuggestions(false);
-      }
-    };
-    document.addEventListener('pointerdown', handleClickOutside);
-    return () => document.removeEventListener('pointerdown', handleClickOutside);
-  }, []);
-
-  const handleNavigate = (id) => {
-    navigate(`/sellers/ads/${id}/details`);
-    setQuery('');
-    setShowSuggestions(false);
-  };
 
   const getGreeting = () => {
     const hour = new Date().getHours();
@@ -195,56 +149,7 @@ export default function BuyerAppBar({
               </Typography>
             </Box>
 
-            {/* Search */}
-            {!isXs && (
-              <Box ref={boxRef} sx={{ position: 'relative', flexGrow: 1, mx: 2 }}>
-                <SearchContainer sx={{ bgcolor: mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.92)' }}>
-                  <InputBase
-                    placeholder="Search ads, categories, locations..."
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    sx={{ ml: 1, flex: 1, color: mode === 'dark' ? '#fff' : 'inherit' }}
-                    inputProps={{ 'aria-label': 'search ads' }}
-                  />
-                  <IconButton size="small" aria-label="search" sx={{ color: iconColor }}>
-                    <SearchIcon />
-                  </IconButton>
-                </SearchContainer>
-
-                {showSuggestions && (
-                  <Paper
-                    sx={{
-                      position: 'absolute',
-                      top: '100%',
-                      left: 0,
-                      right: 0,
-                      zIndex: 1300,
-                      maxHeight: 300,
-                      overflow: 'auto',
-                    }}
-                  >
-                    <List disablePadding>
-                      {results.length === 0 ? (
-                        <ListItemButton>
-                          <ListItemText primary="No results found" />
-                        </ListItemButton>
-                      ) : (
-                        results.map((m) => (
-                          <ListItemButton key={m.id} onClick={() => handleNavigate(m.id)}>
-                            <ListItemText primary={m.title} secondary={m.city ? `${m.city} • ${m.category.name}` : m.category.name} />
-                          </ListItemButton>
-                        ))
-                      )}
-                    </List>
-                    <Divider />
-                    <Box sx={{ textAlign: 'center', p: 1 }}>
-                      <Button onClick={() => navigate('/sellers/categories')}>View all categories</Button>
-                    </Box>
-                  </Paper>
-                )}
-              </Box>
-            )}
-
+           
             {/* Right icons / actions */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
               <Button
@@ -346,32 +251,22 @@ export default function BuyerAppBar({
 
                 <ListItemButton onClick={() => { navigate('/sellers/my-applications'); setIsDrawerOpen(false); }}>
                   <ListItemIcon><CategoryIcon /></ListItemIcon>
-                  <ListItemText primary="My Applications" />
+                  <ListItemText primary="Pending Ads" />
                 </ListItemButton>
-
-               <ListItemButton onClick={() => { navigate('/sellers/dashboard'); setIsDrawerOpen(false); }}>
-                <ListItemIcon><BarChartIcon /></ListItemIcon>
-                <ListItemText primary="Dashboard" />
-              </ListItemButton>
-
-              <ListItemButton onClick={() => { navigate('/sellers/post-ad'); setIsDrawerOpen(false); }}>
-                <ListItemIcon><PostAddIcon /></ListItemIcon>
-                <ListItemText primary="Browse an Ad" />
-              </ListItemButton>
 
               <ListItemButton onClick={() => { navigate('/sellers/my-ads'); setIsDrawerOpen(false); }}>
                 <ListItemIcon><CategoryIcon /></ListItemIcon>
-                <ListItemText primary="My Ads" />
+                <ListItemText primary="Approved Ads" />
+              </ListItemButton>
+
+        <ListItemButton onClick={() => { navigate('/sellers/post-ad'); setIsDrawerOpen(false); }}>
+                <ListItemIcon><PostAddIcon /></ListItemIcon>
+                <ListItemText primary="Post an Ad" />
               </ListItemButton>
 
               <ListItemButton onClick={() => { navigate('/sellers/orders'); setIsDrawerOpen(false); }}>
                 <ListItemIcon><ShoppingBagIcon /></ListItemIcon>
                 <ListItemText primary="Orders & Purchases" />
-              </ListItemButton>
-
-              <ListItemButton onClick={() => { navigate('/sellers/payments'); setIsDrawerOpen(false); }}>
-                <ListItemIcon><MonetizationOnIcon /></ListItemIcon>
-                <ListItemText primary="Payments" />
               </ListItemButton>
 
               <ListItemButton onClick={() => { navigate('/sellers/analytics'); setIsDrawerOpen(false); }}>

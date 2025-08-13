@@ -44,9 +44,6 @@ urlpatterns = [
     path('auth/get/buyer/', views.get_buyer_profile, name='api_get_profile_buyer'),
     path('auth/get/seller/', views.get_seller_profile, name='api_get_profile_seller'),
 
-    # Avatar update
-#    path('api/client/avatar/', views.client_avatar_update_api, name='api_client_avatar_update'),
-
     # Change password
     path('auth/change-password/', views.UpdatePasswordView, name='update_password'),
 
@@ -71,9 +68,9 @@ urlpatterns = [
     path('buyer-applications-list/', views.buyer_applications_list, name='buyer_applications_list'),
     path('buyer/<int:buyer_id>/view-history/', views.buyer_view_history, name='buyer-view-history'),
     path('buyer/account-settings/', views.buyer_account_settings, name='buyer-account-settings'),
-
-
     path('sellers-dashboard/', views.seller_dashboard, name='seller-dashboard'),
+    path('seller/ads/', views.ads_list_create, name='seller-create'),
+    path("seller/ads/<int:pk>/", views.seller_ad_detail, name="seller-ad-detail"),
 
 
 

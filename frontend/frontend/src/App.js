@@ -34,6 +34,12 @@ import BuyerAccountSettings from './pages/BuyersPages/Buyers_Account_Settings';
 
 // Seller Pages wrapper and nested pages
 import SellersPagesWrapper from "./pages/SellersPages/index";
+import SellerDashboard from './pages/SellersPages/SellerDashboard';
+import SellerAdsCategories from './pages/SellersPages/Seller_Ads_Categories';
+import SellerCreateAdForm from './pages/SellersPages/SellerCreateAds';
+import SellerAdsDetails from './pages/SellersPages/Seller_Ads_Details';
+
+
 
 
 // Components
@@ -88,19 +94,11 @@ function App() {
 
           {/* Buyer routes wrapped inside context/layout wrapper */}
             <Route path="/sellers" element={<SellersPagesWrapper/>}>
-              <Route path="dashboard" element={<BuyerDashboard />} />
-              <Route path="categories" element={<BuyerAdsCategories />} />
-              <Route path="messages-list" element={<BuyerMessages/>} />
-              <Route path="orders" element={<BuyerOrders />} />
-              <Route path="notifications-list" element={<BuyerNotifications />} />
-              <Route path="categories/:id/:name/ads" element={<BuyersAdsByCategory />} />
-              <Route path="ads/:id/details" element={<Buyers_Ads_Details />} />
-              <Route path="apply/:id" element={<BuyerJobApplicationForm />} />
-              <Route path='my-applications' element={<BuyerApplicationsList/>} />
-              <Route path='my-saved-ads' element={<BuyerSavedAdsList/>} />
-              <Route path='view-history' element={<BuyerViewHistoryList/>} />
-              <Route path='help-center' element={<HelpCenter/>} />
-              <Route path='account-settings' element={<BuyerAccountSettings/>} />
+              <Route path="dashboard" element={<SellerDashboard/>} />
+              <Route path="categories" element={<SellerAdsCategories />} />
+              <Route path="create/:id/:name/ads" element={<SellerCreateAdForm/>} />
+              <Route path="ads/:id/details" element={<SellerAdsDetails/>} />
+
             </Route>
 
 

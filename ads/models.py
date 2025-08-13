@@ -435,7 +435,7 @@ class BuyerNotification(models.Model):
     seller_avatar_url = models.URLField(blank=True, null=True)
 
     def __str__(self):
-        return f"Buyer: {self.buyer.user.username} - {self.header or self.notification_type}"
+        return f"Buyer: {self.buyer.username} - {self.header or self.notification_type}"
 
 
 class SellerNotification(models.Model):
@@ -491,7 +491,7 @@ class SellerNotification(models.Model):
     ad_id = models.PositiveIntegerField(blank=True, null=True)
 
     def __str__(self):
-        return f"Seller: {self.seller.user.username} - {self.header or self.notification_type}"
+        return f"Seller: {self.seller.username} - {self.header or self.notification_type}"
 
 
 

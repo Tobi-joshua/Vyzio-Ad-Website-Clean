@@ -1355,3 +1355,60 @@ def seller_dashboard(request):
     }
 
     return Response(data)
+
+
+
+
+# List and create (GET, POST)
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])  
+@parser_classes([MultiPartParser, FormParser])
+def ads_list_create(request):
+    if request.method == "GET":
+        qs = Ad.objects.all().order_by("-created_at")
+        category = request.query_params.get("category")
+        user = request.query_params.get("user")
+
+        if category:
+            qs = qs.filter(category_id=category)
+        if user:
+            qs = qs.filter(user_id=user)
+
+        serializer = AdCreateSerializer(qs, many=True, context={"request": request})
+        return Response(serializer.data)
+
+    # POST -> create ad (multipart/form-data)
+    if request.method == "POST":
+        serializer = AdCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            ad = serializer.save(user=request.user, status="draft")
+
+            # handle multiple extra images (key: 'images')
+            images = request.FILES.getlist("images")
+            created_images = []
+            for f in images:
+                img = AdImage.objects.create(ad=ad, image=f)
+                created_images.append(img)
+
+            out = AdCreateSerializer(ad, context={"request": request}).data
+            return Response(out, status=status.HTTP_201_CREATED)
+
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def seller_ad_detail(request, pk):
+    """
+    Retrieve a single ad belonging to the logged-in seller.
+    """
+    try:
+        ad = Ad.objects.get(pk=pk, user=request.user)
+    except Ad.DoesNotExist:
+        return Response({"detail": "Ad not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = SellerAdSerializer(ad)
+    return Response(serializer.data)
+

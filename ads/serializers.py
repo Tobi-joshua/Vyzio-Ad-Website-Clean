@@ -94,16 +94,6 @@ class AdsSerializer(serializers.ModelSerializer):
         return obj.user.date_joined.date() if obj.user.date_joined else None
 
 
-"""
-AdCreateSerializer
-Serializer for creating Ad instances.
-Includes fields needed when creating an ad.
-"""
-class AdCreateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Ad
-        fields = ['user', 'category', 'title', 'description', 'city', 'price','currency','is_active']
-
 
 """
 UserSerializer
@@ -137,7 +127,7 @@ class Base64ImageField(serializers.ImageField):
             # Generate a random file name
             file_name = str(uuid.uuid4())[:12]  # 12-character random name
             # Get the file extension
-            file_extension = self.get_file_extension(decoded_file) or "jpg"  # Default to jpg if unknown
+            file_extension = self.get_file_extension(decoded_file) or "jpg"  
             complete_file_name = f"{file_name}.{file_extension}"
 
             # Create ContentFile instance
@@ -227,7 +217,7 @@ class UserSerializer(serializers.ModelSerializer):
                 first_name=validated_data['first_name'],
                 last_name=validated_data['last_name']
             )
-            user.set_password(validated_data['password1'])  # match your validate() usage
+            user.set_password(validated_data['password1']) 
             user.is_active = True
             user.save()
             return user
@@ -485,3 +475,59 @@ class UserAccountSerializer(serializers.ModelSerializer):
             'avatar_update', 
         ]
         read_only_fields = ['id', 'username', 'email']
+
+
+
+"""
+AdCreateSerializer
+Serializer for creating Ad instances.
+Includes fields needed when creating an ad.
+"""
+
+class AdCreateSerializer(serializers.ModelSerializer):
+    images = AdImageSerializer(many=True, read_only=True)
+    class Meta:
+        model = Ad
+        fields = ['id', 'user', 'category', 'title', 'description', 'city', 'price', 'currency', 'is_active', 'header_image', 'header_image_url', 'status', 'created_at', 'images']
+        read_only_fields = ['id', 'user', 'is_active', 'header_image_url', 'status', 'created_at', 'images']
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['user'] = request.user
+            validated_data['status'] = 'draft'
+        return super().create(validated_data)
+
+
+class SellerAdSerializer(serializers.ModelSerializer):
+    images = AdImageSerializer(many=True, read_only=True)
+    category = CategorySerializer(read_only=True)
+    total_ads_posted = serializers.SerializerMethodField()
+    member_since = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+    view_count = serializers.SerializerMethodField()
+    message_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Ad
+        fields = [
+            'id', 'title', 'description', 'city', 'price', 'currency', 'status',
+            'is_active', 'created_at', 'header_image_url', 'images', 'category',
+            'total_ads_posted', 'member_since', 'average_rating', 'view_count', 'message_count'
+        ]
+
+    def get_total_ads_posted(self, obj):
+        return Ad.objects.filter(user=obj.user).count()
+
+    def get_average_rating(self, obj):
+        return obj.user.reviews.aggregate(avg=Avg('rating'))['avg'] or 0
+
+    def get_member_since(self, obj):
+        return obj.user.date_joined.date() if obj.user.date_joined else None
+
+    def get_view_count(self, obj):
+        return obj.viewhistory.count()
+
+    def get_message_count(self, obj):
+        chats = Chat.objects.filter(ad=obj)
+        return Message.objects.filter(chat__in=chats).count()
