@@ -1,86 +1,69 @@
-import React, { useState, useContext } from "react";
+// SellerCreateAdFormTwoStep.jsx
+import React, { useState, useContext, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Box, Typography, TextField, Button, CircularProgress,
-  Stack, Alert, InputAdornment, Avatar, IconButton, Grid
+  Stack, Alert, InputAdornment, Avatar, IconButton, Grid,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  MenuItem, FormControl, InputLabel, Select, LinearProgress
 } from "@mui/material";
 import AddPhotoIcon from "@mui/icons-material/AddPhotoAlternate";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { API_BASE_URL } from "../../constants";
 import { SellerDashboardContext } from "./index";
 import { useWebToast } from '../../hooks/useWebToast';
+import { usePaystackPayment } from "react-paystack";
 
-// ---- file helpers (from your snippet) ----
+// helpers
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_DOCUMENT_SIZE = 20 * 1024 * 1024; // 20MB
-const MAX_ZIP_SIZE = 50 * 1024 * 1024; // 50MB
-
 const isAllowedSize = (file) => {
+  if (!file || !file.size) return false;
   const { name, size } = file;
-  if (!size) return false;
   const extension = name.split(".").pop().toLowerCase();
-
-  if (["jpg", "jpeg", "png", "gif", "webp"].includes(extension)) {
-    return size <= MAX_IMAGE_SIZE;
-  }
-  if (["pdf", "docx", "txt", "tex", "xlsx", "pptx", "doc"].includes(extension)) {
-    return size <= MAX_DOCUMENT_SIZE;
-  }
-  if (["zip", "rar"].includes(extension)) {
-    return size <= MAX_ZIP_SIZE;
-  }
-  return false;
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(extension)) return size <= MAX_IMAGE_SIZE;
+  return true;
 };
 
-const getFileExtension = (fileName = "") => {
-  const clean = fileName.split(/[?#]/)[0];
-  const idx = clean.lastIndexOf(".");
-  if (idx === -1) return "";
-  return clean.slice(idx + 1).toLowerCase();
-};
+const CURRENCY_OPTIONS = ["USD", "NGN", "CAD", "GBP", "EUR", "XEN"];
 
-const getFilePlaceholder = (fileName) => {
-  const ext = getFileExtension(fileName);
-  const placeholderMap = {
-    pdf: "https://cdn-icons-png.flaticon.com/512/337/337946.png",
-    doc: "https://ik.imagekit.io/experthivetutors/doc_1_nnaqpo_vTEWC6nBN.png?updatedAt=1744019966381",
-    docx: "https://cdn-icons-png.flaticon.com/512/337/337932.png",
-    xls: "https://ik.imagekit.io/experthivetutors/xls-file_eu86rj_WEePKLdQX.png?updatedAt=1744019967951",
-    xlsx: "https://cdn-icons-png.flaticon.com/512/337/337957.png",
-    csv: "https://ik.imagekit.io/experthivetutors/csv_dcesje_bgDjyIvyYn.png?updatedAt=1744019966046",
-    zip: "https://ik.imagekit.io/experthivetutors/zip-folder_wxyv1y_fuOQeW2ra.png?updatedAt=1744019965847",
-    ppt: "https://ik.imagekit.io/experthivetutors/ppt_ctrt5p_vr8DdLdLo.png?updatedAt=1744019965373",
-    pptx: "https://ik.imagekit.io/experthivetutors/pptx_ig7g2x_eCHIvrB-0.png?updatedAt=1744019967583",
-    html: "https://ik.imagekit.io/experthivetutors/html_vvy3tg_lfWn_Fhsf.png?updatedAt=1744019965598",
-    mp3: "https://ik.imagekit.io/experthivetutors/video_1_zn3iye_bvK4-rUmj.png?updatedAt=1744019966857",
-    mkv: "https://ik.imagekit.io/experthivetutors/video_1_zn3iye_bvK4-rUmj.png?updatedAt=1744019966857",
-    webm: "https://ik.imagekit.io/experthivetutors/video_1_zn3iye_bvK4-rUmj.png?updatedAt=1744019966857",
-    txt: "https://ik.imagekit.io/experthivetutors/txt-file_w71gek_3dtUXTXzI.png?updatedAt=1744019968275",
-  };
-  return placeholderMap[ext] || "https://cdn-icons-png.flaticon.com/512/1828/1828884.png";
-};
-// ---- end helpers ----
-
-export default function SellerCreateAdForm() {
+/* ---------- Component ---------- */
+export default function SellerCreateAdFormTwoStep() {
   const { id: categoryId, name: catName } = useParams();
   const navigate = useNavigate();
   const showToast = useWebToast();
-  const { userId, token, firstName, email } = useContext(SellerDashboardContext);
+  const { userId, token, firstName, email } = useContext(SellerDashboardContext || {});
 
+  // metadata step
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [city, setCity] = useState("");
   const [price, setPrice] = useState("");
-  const [currency, setCurrency] = useState("USD");
+  const [currency, setCurrency] = useState("NGN");
+
+  // images step
   const [headerImageFile, setHeaderImageFile] = useState(null);
   const [extraImages, setExtraImages] = useState([]);
 
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
-  const [adId, setAdId] = useState(null);
+  const [step, setStep] = useState(1); // 1 metadata, 2 images, 3 payment/summary
 
-  // handle single header image
+  // network states
+  const [creating, setCreating] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const [adData, setAdData] = useState(null);
+
+  // payment
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [creatingPayment, setCreatingPayment] = useState(false);
+  const [paymentDetails, setPaymentDetails] = useState(null);
+
+  const getAuthHeaders = () => {
+    const h = {};
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
+  };
+
+  // file handlers
   const handleHeaderImageChange = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -91,7 +74,6 @@ export default function SellerCreateAdForm() {
     setHeaderImageFile(f);
   };
 
-  // handle multiple extra images (append)
   const handleExtraImagesChange = (e) => {
     const files = Array.from(e.target.files || []);
     const allowed = [];
@@ -105,146 +87,375 @@ export default function SellerCreateAdForm() {
     if (allowed.length) setExtraImages((prev) => [...prev, ...allowed]);
   };
 
-  const removeExtraImage = (index) => {
-    setExtraImages((prev) => prev.filter((_, i) => i !== index));
+  const removeExtraImage = (index) => setExtraImages((prev) => prev.filter((_, i) => i !== index));
+  const clearForm = () => {
+    setTitle(""); setDescription(""); setCity(""); setPrice(""); setHeaderImageFile(null); setExtraImages([]); setAdData(null); setStep(1);
   };
 
-  // create ad on backend, including multiple images
-  const createAd = async () => {
-    setError("");
-    setSending(true);
+  // create metadata only
+  const createAdMetadata = async () => {
+    setError(""); setCreating(true);
     try {
-      const fd = new FormData();
-      fd.append("category", categoryId);
-      fd.append("title", title);
-      fd.append("description", description);
-      fd.append("city", city);
-      fd.append("price", price || "0");
-      fd.append("currency", currency);
-      if (headerImageFile) fd.append("header_image", headerImageFile);
+      const payload = {
+        title, description, city,
+        price: price || "0",
+        currency: currency || "NGN",
+      };
+      if (categoryId) payload.category = categoryId;
 
-      // append multiple images under the same key 'images'
-      extraImages.forEach((img) => fd.append("images", img));
-
-      const res = await fetch(`${API_BASE_URL}/api/seller/ads/`, {
+      const res = await fetch(`${API_BASE_URL}/api/seller/ads/create-metadata/`, {
         method: "POST",
         headers: {
-          Authorization: token ? `Bearer ${token}` : undefined,
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
         },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || err.error || "Failed creating ad metadata");
+      }
+      const data = await res.json();
+      setAdData(data);
+      setStep(2);
+      showToast({ message: "Ad metadata created — proceed to upload images", severity: "success" });
+      return data;
+    } catch (err) {
+      setError(err.message || "Unknown error creating ad");
+      throw err;
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // upload images to ad (call after metadata creation)
+  const uploadImagesToAd = async (adIdArg) => {
+    if (!adIdArg && !adData?.id) throw new Error("No ad ID for image upload");
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      if (headerImageFile) fd.append("header_image", headerImageFile);
+      extraImages.forEach((img) => fd.append("images", img));
+
+      const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adIdArg || adData.id}/upload-images/`, {
+        method: "POST",
+        headers: { ...getAuthHeaders() }, // do NOT set Content-Type for FormData
         body: fd,
         credentials: "include",
       });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Failed creating ad");
+        throw new Error(err.detail || "Failed uploading images");
       }
-
-      const data = await res.json();
-      setAdId(data.id);
-      return data;
+      const json = await res.json();
+      showToast({ message: "Images uploaded", severity: "success" });
+      setStep(3);
+      return json;
     } catch (err) {
-      setError(err.message || "Unknown error creating ad");
+      setError(err.message || "Image upload failed");
       throw err;
     } finally {
-      setSending(false);
+      setUploading(false);
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
-    setSuccessMsg("");
+
+  // create payment instance (same as your create_ad_payment endpoint)
+  const createPaymentInstance = async (adIdArg) => {
+    if (!adIdArg && !adData?.id) throw new Error("No ad ID for payment");
+    setCreatingPayment(true);
     try {
-      const ad = await createAd();
-      setSuccessMsg("Ad created successfully!");
-      showToast({ message: "Ad created successfully", severity: "success" });
-      setAdId(ad.id);
-      navigate(`/sellers/ads/${ad.id}/details`);
+      const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adIdArg || adData.id}/create-payment/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
+        credentials: "include",
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to create payment instance");
+      }
+      const json = await res.json();
+      setPaymentDetails(json);
+      setPaymentDialogOpen(true);
+      return json;
+    } finally {
+      setCreatingPayment(false);
+    }
+  };
+
+  // confirm payment on server
+  const confirmPaymentOnServer = async ({ payment_reference, ad_id }) => {
+    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+      },
+      credentials: "include",
+      body: JSON.stringify({ payment_reference, ad_id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to confirm payment on server");
+    }
+    return res.json();
+  };
+
+  // Paystack launcher
+  const PaymentLauncher = ({ config, onSuccess, onClose }) => {
+    const initializePayment = usePaystackPayment(config || {});
+    useEffect(() => {
+      if (!config || !config.amount || !config.publicKey) return;
+      initializePayment(onSuccess, onClose);
+    }, [config]);
+    return null;
+  };
+
+  // submit metadata step
+  const handleMetadataSubmit = async (e) => {
+    e?.preventDefault?.();
+    try {
+      await createAdMetadata();
     } catch (err) {
     }
   };
 
+  // submit images step
+  const handleImagesSubmit = async (e) => {
+    e?.preventDefault?.();
+    try {
+      await uploadImagesToAd();
+    } catch (err) {
+    }
+  };
+
+  // pay now - ensure paymentDetails exist
+  const handlePayNow = async () => {
+    if (!adData?.id) {
+      showToast({ message: "No ad to pay for", severity: "error" });
+      return;
+    }
+    try {
+      if (!paymentDetails) {
+        await createPaymentInstance(adData.id);
+      } else {
+        setPaymentDialogOpen(true);
+      }
+    } catch (err) {
+      showToast({ message: err.message || "Payment initialization failed", severity: "error" });
+    }
+  };
+
+
+  // Success callback - synchronous
+const handlePaySuccess = (response) => {
+  // Call async logic separately
+  confirmPaymentAndRedirect(response);
+};
+
+// Close callback - synchronous
+const handlePayClose = () => {
+  showToast({ message: "Payment was cancelled or closed.", severity: "info" });
+  setPaymentDialogOpen(false);
+  window.location.href = `/sellers/dashboard`;
+};
+
+// Async function to handle verification and redirect
+async function confirmPaymentAndRedirect(response) {
+  try {
+    const serverResp = await confirmPaymentOnServer({
+      payment_reference: response.reference,
+      ad_id: adData?.id,
+    });
+    setPaymentDialogOpen(false);
+    showToast({
+      message: serverResp.detail || "Payment successful. Your ad is now active!",
+      severity: "success"
+    });
+    navigate(`/sellers/ads/${adData?.id}/details`);
+  } catch (err) {
+    showToast({
+      message: err.message || "Payment confirmation failed",
+      severity: "error"
+    });
+  }
+}
+
+
+
+  // UI
+  const accent = "#6C5CE7"; // soft purple accent
+
   return (
-    <Box maxWidth={900} mx="auto" my={4} p={3} sx={{ bgcolor: "background.paper", boxShadow: 3, borderRadius: 2 }}>
-      <Typography variant="h5" mb={2}>Create ad {catName ? `in ${decodeURIComponent(catName)}` : ""}</Typography>
+    <Box maxWidth={980} mx="auto" my={4} p={3}
+      sx={{ bgcolor: "background.paper", boxShadow: 3, borderRadius: 2, borderLeft: `6px solid ${accent}` }}>
+      <Typography variant="h5" mb={2} color="text.primary">Create ad {catName ? `in ${decodeURIComponent(catName)}` : ""}</Typography>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-      {successMsg && <Alert severity="success" sx={{ mb: 2 }}>{successMsg}</Alert>}
 
-      <form onSubmit={handleSubmit} encType="multipart/form-data">
-        <TextField label="Title" fullWidth value={title} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} required />
-        <TextField label="Description" multiline rows={6} fullWidth value={description} onChange={(e) => setDescription(e.target.value)} sx={{ mb: 2 }} required />
+      {/* Step indicator */}
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+        <Box sx={{ px: 2, py: 0.5, bgcolor: step >= 1 ? accent : "grey.200", color: "white", borderRadius: 1 }}>1. Metadata</Box>
+        <Box sx={{ px: 2, py: 0.5, bgcolor: step >= 2 ? accent : "grey.200", color: step >= 2 ? "white" : "text.secondary", borderRadius: 1 }}>2. Images</Box>
+        <Box sx={{ px: 2, py: 0.5, bgcolor: step >= 3 ? accent : "grey.200", color: step >= 3 ? "white" : "text.secondary", borderRadius: 1 }}>3. Publish</Box>
+      </Stack>
 
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
-          <TextField label="City" value={city} onChange={(e) => setCity(e.target.value)} fullWidth />
-          <TextField
-            label="Price"
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            type="number"
-            InputProps={{ startAdornment: <InputAdornment position="start">{currency}</InputAdornment> }}
-          />
-        </Stack>
+      {step === 1 && (
+        <form onSubmit={handleMetadataSubmit}>
+          <TextField label="Title" fullWidth value={title} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} required />
+          <TextField label="Description" multiline rows={6} fullWidth value={description} onChange={(e) => setDescription(e.target.value)} sx={{ mb: 2 }} required />
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
+            <TextField label="City" value={city} onChange={(e) => setCity(e.target.value)} fullWidth />
+            <TextField label="Price" value={price} onChange={(e) => setPrice(e.target.value)} type="number"
+              InputProps={{ startAdornment: <InputAdornment position="start">{currency}</InputAdornment> }} />
+          </Stack>
 
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Header image (single)</Typography>
-          <label htmlFor="header-image-input">
-            <input id="header-image-input" type="file" accept="image/*" style={{ display: "none" }} onChange={handleHeaderImageChange} />
-            <Button component="span" variant="outlined" startIcon={<AddPhotoIcon />}>Choose header image</Button>
-          </label>
+          <FormControl fullWidth sx={{ mb: 2 }}>
+            <InputLabel id="ad-currency-label">Advertised Currency</InputLabel>
+            <Select labelId="ad-currency-label" value={currency} label="Advertised Currency" onChange={(e) => setCurrency(e.target.value)}>
+              {CURRENCY_OPTIONS.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+            </Select>
+            <Typography variant="caption" color="text.secondary">
+              This is the currency buyers see. Listing fee is determined separately.
+            </Typography>
+          </FormControl>
 
-          {headerImageFile && (
-            <Stack direction="row" spacing={1} alignItems="center" mt={1}>
-              <Avatar variant="rounded" src={URL.createObjectURL(headerImageFile)} sx={{ width: 72, height: 72 }} />
-              <Box>
-                <Typography variant="body2">{headerImageFile.name}</Typography>
-                <Typography variant="caption" color="text.secondary">{(headerImageFile.size/1024/1024).toFixed(2)} MB</Typography>
-              </Box>
-            </Stack>
-          )}
-        </Box>
+          <Stack direction="row" spacing={2} justifyContent="flex-end">
+            <Button variant="outlined" onClick={() => navigate(-1)} disabled={creating}>Cancel</Button>
+            <Button type="submit" variant="contained" disabled={creating} sx={{ bgcolor: accent }}>
+              {creating ? <CircularProgress size={20} color="inherit" /> : "Save & Next"}
+            </Button>
+          </Stack>
+        </form>
+      )}
 
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Extra images (multiple)</Typography>
-          <label htmlFor="extra-images-input">
-            <input id="extra-images-input" type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleExtraImagesChange} />
-            <Button component="span" variant="outlined" startIcon={<AddPhotoIcon />}>Add extra images</Button>
-          </label>
+      {step === 2 && (
+        <form onSubmit={handleImagesSubmit}>
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>Header image (single)</Typography>
+            <label htmlFor="header-image-input">
+              <input id="header-image-input" type="file" accept="image/*" style={{ display: "none" }} onChange={handleHeaderImageChange} />
+              <Button component="span" variant="outlined" startIcon={<AddPhotoIcon />}>Choose header image</Button>
+            </label>
 
-          <Grid container spacing={1} sx={{ mt: 1 }}>
-            {extraImages.map((img, idx) => (
-              <Grid item key={idx}>
-                <Box sx={{ position: "relative", width: 96 }}>
-                  <Avatar variant="rounded" src={URL.createObjectURL(img)} sx={{ width: 96, height: 72 }} />
-                  <IconButton
-                    size="small"
-                    onClick={() => removeExtraImage(idx)}
-                    sx={{ position: "absolute", top: -10, right: -10, bgcolor: "background.paper" }}
-                  >
-                    <DeleteIcon fontSize="small" />
-                  </IconButton>
-                  <Typography variant="caption" display="block" noWrap sx={{ width: 96 }}>{img.name}</Typography>
+            {headerImageFile && (
+              <Stack direction="row" spacing={1} alignItems="center" mt={1}>
+                <Avatar variant="rounded" src={URL.createObjectURL(headerImageFile)} sx={{ width: 72, height: 72 }} />
+                <Box>
+                  <Typography variant="body2">{headerImageFile.name}</Typography>
+                  <Typography variant="caption" color="text.secondary">{(headerImageFile.size/1024/1024).toFixed(2)} MB</Typography>
                 </Box>
-              </Grid>
-            ))}
-          </Grid>
+              </Stack>
+            )}
+          </Box>
+
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>Extra images (multiple)</Typography>
+            <label htmlFor="extra-images-input">
+              <input id="extra-images-input" type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleExtraImagesChange} />
+              <Button component="span" variant="outlined" startIcon={<AddPhotoIcon />}>Add extra images</Button>
+            </label>
+
+            <Grid container spacing={1} sx={{ mt: 1 }}>
+              {extraImages.map((img, idx) => (
+                <Grid item key={idx}>
+                  <Box sx={{ position: "relative", width: 96 }}>
+                    <Avatar variant="rounded" src={URL.createObjectURL(img)} sx={{ width: 96, height: 72 }} />
+                    <IconButton
+                      size="small"
+                      onClick={() => removeExtraImage(idx)}
+                      sx={{ position: "absolute", top: -10, right: -10, bgcolor: "background.paper" }}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                    <Typography variant="caption" display="block" noWrap sx={{ width: 96 }}>{img.name}</Typography>
+                  </Box>
+                </Grid>
+              ))}
+            </Grid>
+          </Box>
+
+          <Stack direction="row" spacing={2} justifyContent="space-between" alignItems="center">
+            <Button variant="text" onClick={() => setStep(1)}>Back</Button>
+            <Box>
+              <Button variant="outlined" onClick={() => { clearForm(); }}>Reset</Button>
+              <Button type="submit" variant="contained" disabled={uploading} sx={{ ml: 1, bgcolor: accent }}>
+                {uploading ? <CircularProgress size={18} color="inherit" /> : "Upload & Continue"}
+              </Button>
+            </Box>
+          </Stack>
+        </form>
+      )}
+
+      {step === 3 && (
+        <Box>
+          <Alert severity="success">Ad created. Ready to publish.</Alert>
+          <Box sx={{ mt: 2 }}>
+            <Typography variant="subtitle1">{adData?.title}</Typography>
+            <Typography variant="body2" color="text.secondary">{currency} {adData?.price ?? price}</Typography>
+          </Box>
+
+          <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{ mt: 2 }}>
+            <Button variant="outlined" onClick={() => navigate(-1)}>Back to dashboard</Button>
+            <Button variant="contained" sx={{ bgcolor: accent }} onClick={handlePayNow}>
+              Pay & Publish
+            </Button>
+            <Button variant="text" onClick={() => { showToast({ message: "Will publish later", severity: "info" }); navigate("/sellers/dashboard"); }}>
+              Publish later
+            </Button>
+          </Stack>
         </Box>
+      )}
 
-        <Stack direction="row" spacing={2} justifyContent="flex-end" alignItems="center">
-          <Button variant="outlined" onClick={() => navigate(-1)} disabled={sending}>Cancel</Button>
-          <Button type="submit" variant="contained" disabled={sending}>
-            {sending ? <CircularProgress size={20} /> : "Create Ad"}
+      {/* Payment dialog */}
+      <Dialog open={paymentDialogOpen} onClose={() => setPaymentDialogOpen(false)}>
+        <DialogTitle>Pay to publish your ad</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Your ad is currently <strong>pending</strong>. Pay the listing fee to activate it.
+          </Typography>
+          <Typography variant="body2">Ad title: {adData?.title}</Typography>
+          <Typography variant="body2">Advertised price: {currency} {adData?.price ?? price}</Typography>
+          <Box mt={1}>
+            <Typography variant="body2">Listing fee:</Typography>
+            {paymentDetails ? (
+              <Typography variant="h6">{paymentDetails.currency} {paymentDetails.amount}</Typography>
+            ) : (
+              <>
+                <Typography variant="body2">Loading fee…</Typography>
+                <LinearProgress sx={{ mt: 1 }} />
+              </>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setPaymentDialogOpen(false); navigate("/sellers/dashboard"); }}>Pay later</Button>
+          <Button variant="contained" onClick={handlePayNow} disabled={creatingPayment || !paymentDetails}>
+            {creatingPayment ? <CircularProgress size={18} /> : "Pay now"}
           </Button>
-        </Stack>
-      </form>
+        </DialogActions>
+      </Dialog>
 
-      <Alert severity="info" sx={{ mt: 3 }}>
-        <Typography variant="subtitle2">Payment methods & note</Typography>
-        <Typography variant="body2">
-          For now the app creates ads without real payment processing. When you're ready to accept payments we will integrate providers such as Paystack, Stripe, or Coinbase Commerce. You can create the merchant accounts and provide keys (recommended) — I’ll integrate them in test mode first.
-        </Typography>
-      </Alert>
+      {/* Payment launcher */}
+      {paymentDetails && paymentDetails.payment_reference && paymentDetails.public_key && (
+        <PaymentLauncher
+          config={{
+            reference: paymentDetails.payment_reference,
+            email: email,
+            amount: paymentDetails.amount_smallest_unit || Math.round(Number(paymentDetails.amount || 0) * 100),
+            publicKey: paymentDetails.public_key || process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "",
+            currency: paymentDetails.currency || "NGN",
+          }}
+          onSuccess={handlePaySuccess}
+          onClose={handlePayClose}
+        />
+      )}
     </Box>
   );
 }

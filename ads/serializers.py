@@ -499,6 +499,26 @@ class AdCreateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class AdDetailSerializer(serializers.ModelSerializer):
+    images = AdImageSerializer(many=True, read_only=True)
+    header_image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Ad
+        fields = [
+            'id', 'user', 'category', 'title', 'description', 'city',
+            'price', 'currency', 'is_active', 'header_image', 'header_image_url',
+            'status', 'created_at', 'images'
+        ]
+        read_only_fields = fields
+
+    def get_header_image_url(self, obj):
+        request = self.context.get("request")
+        if getattr(obj, "header_image", None):
+            return request.build_absolute_uri(obj.header_image.url) if request else obj.header_image.url
+        return None
+
+
 class SellerAdSerializer(serializers.ModelSerializer):
     images = AdImageSerializer(many=True, read_only=True)
     category = CategorySerializer(read_only=True)

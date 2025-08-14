@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import path
 from django.template.response import TemplateResponse
 from django.db.models import Count
+from django.utils.html import format_html
 from .models import *
 
 class AdImageInline(admin.TabularInline):
@@ -118,6 +119,40 @@ class ApplicationAdmin(admin.ModelAdmin):
             'fields': ('applied_at', 'updated_at')
         }),
     )
+
+
+
+@admin.register(ListingPrice)
+class ListingPriceAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "currency", "amount", "is_default", "active", "created_at")
+    list_filter = ("currency", "active", "is_default")
+    search_fields = ("currency", "name")
+    ordering = ("-created_at",)
+    actions = ("make_default_for_currency", "activate_prices", "deactivate_prices")
+
+    def make_default_for_currency(self, request, queryset):
+        """
+        Mark selected ListingPrice as default for their currencies.
+        If multiple selected across different currencies, handle each.
+        """
+        for lp in queryset:
+            # unset other defaults for same currency
+            ListingPrice.objects.filter(currency__iexact=lp.currency).exclude(pk=lp.pk).update(is_default=False)
+            lp.is_default = True
+            lp.active = True
+            lp.save(update_fields=["is_default", "active"])
+        self.message_user(request, _("Selected listing price(s) marked as default for their currency."))
+    make_default_for_currency.short_description = "Make selected price(s) default for their currency"
+
+    def activate_prices(self, request, queryset):
+        updated = queryset.update(active=True)
+        self.message_user(request, _("%d listing price(s) activated.") % updated)
+    activate_prices.short_description = "Activate selected listing price(s)"
+
+    def deactivate_prices(self, request, queryset):
+        updated = queryset.update(active=False)
+        self.message_user(request, _("%d listing price(s) deactivated.") % updated)
+    deactivate_prices.short_description = "Deactivate selected listing price(s)"
 
 
 

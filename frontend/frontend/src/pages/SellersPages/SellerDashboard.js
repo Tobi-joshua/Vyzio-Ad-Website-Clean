@@ -191,7 +191,7 @@ const chartData = [
           <Button
             startIcon={<AddCircleOutlineIcon />}
             variant="contained"
-            onClick={() => navigate("/sellers/ads/new")}
+            onClick={() => navigate("/sellers/categories")}
           >
             Post New Ad
           </Button>
@@ -256,7 +256,7 @@ const chartData = [
     <Paper sx={{ p: 2, borderRadius: 2, bgcolor: "#f5f5f5" }}>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
         <Typography variant="h6">My Ads</Typography>
-        <Button size="small" onClick={() => navigate("/sellers/ads")}>
+        <Button size="small" onClick={() => navigate("/seller/ads/list")}>
           View all
         </Button>
       </Box>

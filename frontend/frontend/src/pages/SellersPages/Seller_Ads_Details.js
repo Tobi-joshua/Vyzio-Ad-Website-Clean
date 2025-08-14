@@ -40,7 +40,7 @@ const SellerAdsDetails = () => {
   useEffect(() => {
     const fetchAd = async () => {
       try {
-        const r = await fetch(`${API_BASE_URL}/seller/ads/${id}/`, {
+        const r = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/`, {
           headers: getAuthHeaders(),
           credentials: "include",
         });

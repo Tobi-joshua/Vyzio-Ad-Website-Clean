@@ -83,11 +83,13 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 from firebase_admin import auth as firebase_auth
-os.environ["GOOGLE_CLOUD_PROJECT"] = "expert-hive-tutors"
 
 logger = logging.getLogger(__name__)
 GOOGLE_CLIENT_ID = "1094040105500-n1chuvrvp648phgra7qh2q6ctq4vr8s6.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET = "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"
+PAYSTACK_SECRET_KEY = "sk_test_ecc3615c6bad5eecc58dcd40c09270d0ee7a424b"
+PAYSTACK_PUBLIC_KEY = "pk_test_de98e2843175df97c704268ef5608b106d69d5ce"
+
 
 
 
@@ -1256,7 +1258,7 @@ def seller_dashboard(request):
 
     # --- my ads (limit 50 for paging; you can change) ---
     # annotate each ad with a view count (from ViewHistory)
-    my_ads_qs = Ad.objects.filter(user=user).annotate(view_count=Count('viewhistory')).order_by('-created_at')[:50]
+    my_ads_qs = Ad.objects.filter(user=user).annotate(view_count=Count('viewhistory')).order_by('-created_at')[:4]
     my_ads = []
     for a in my_ads_qs:
         my_ads.append({
@@ -1295,7 +1297,7 @@ def seller_dashboard(request):
     conversion_rate = round(conversion_rate, 2)
 
     # --- recent messages (buyer inquiries) --- latest 10 messages for this seller's ads
-    recent_messages_qs = Message.objects.filter(chat__ad__user=user).select_related('sender', 'chat__ad').order_by('-created_at')[:10]
+    recent_messages_qs = Message.objects.filter(chat__ad__user=user).select_related('sender', 'chat__ad').order_by('-created_at')[:5]
     recent_messages = []
     for msg in recent_messages_qs:
         recent_messages.append({
@@ -1358,44 +1360,81 @@ def seller_dashboard(request):
 
 
 
+# GET -> list ads
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ads_list(request):
+    qs = Ad.objects.all().order_by("-created_at")
+    category = request.query_params.get("category")
+    user = request.query_params.get("user")
 
-# List and create (GET, POST)
-@api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])  
+    if category:
+        qs = qs.filter(category_id=category)
+    if user:
+        qs = qs.filter(user_id=user)
+
+    serializer = AdCreateSerializer(qs, many=True, context={"request": request})
+    return Response(serializer.data)
+
+
+# POST -> create ad
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
-def ads_list_create(request):
-    if request.method == "GET":
-        qs = Ad.objects.all().order_by("-created_at")
-        category = request.query_params.get("category")
-        user = request.query_params.get("user")
-
-        if category:
-            qs = qs.filter(category_id=category)
-        if user:
-            qs = qs.filter(user_id=user)
-
-        serializer = AdCreateSerializer(qs, many=True, context={"request": request})
-        return Response(serializer.data)
-
-    # POST -> create ad (multipart/form-data)
-    if request.method == "POST":
-        serializer = AdCreateSerializer(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
-
-        with transaction.atomic():
-            ad = serializer.save(user=request.user, status="draft")
-
-            # handle multiple extra images (key: 'images')
-            images = request.FILES.getlist("images")
-            created_images = []
-            for f in images:
-                img = AdImage.objects.create(ad=ad, image=f)
-                created_images.append(img)
-
-            out = AdCreateSerializer(ad, context={"request": request}).data
-            return Response(out, status=status.HTTP_201_CREATED)
+def ads_create(request):
+    serializer = AdCreateSerializer(data=request.data, context={"request": request})
+    serializer.is_valid(raise_exception=True)
+    with transaction.atomic():
+        ad = serializer.save(user=request.user, status="draft")
+        images = request.FILES.getlist("images")
+        for f in images:
+            AdImage.objects.create(ad=ad, image=f)
+    out = AdCreateSerializer(ad, context={"request": request}).data
+    return Response(out, status=status.HTTP_201_CREATED)
 
 
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ads_create_metadata(request):
+    """
+    Create ad metadata only (fast). Returns the created Ad object (id, slug, etc).
+    Frontend should call this first, then upload images to ads_upload_images.
+    """
+    serializer = AdCreateSerializer(data=request.data, context={"request": request})
+    serializer.is_valid(raise_exception=True)
+    ad = serializer.save(user=request.user, status="draft")
+    out = AdDetailSerializer(ad, context={"request": request}).data
+    return Response(out, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def ads_upload_images(request, pk):
+    """
+    Upload header + extra images for an existing ad.
+    Accepts: header_image (single) and images (multiple).
+    """
+    user = request.user
+    ad = get_object_or_404(Ad, pk=pk, user=user)
+
+    if ad.status == "active":
+        return Response({"detail": "Ad already active; cannot upload images."}, status=status.HTTP_400_BAD_REQUEST)
+
+    header = request.FILES.get("header_image")
+    images = request.FILES.getlist("images")
+
+    if header:
+        ad.header_image = header
+        ad.save(update_fields=["header_image"])
+
+    created = []
+    for f in images:
+        ai = AdImage.objects.create(ad=ad, image=f)
+        created.append({"id": ai.id, "filename": getattr(ai.image, "name", "")})
+
+    return Response({"detail": "Images uploaded", "uploaded": created}, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
@@ -1412,3 +1451,187 @@ def seller_ad_detail(request, pk):
     serializer = SellerAdSerializer(ad)
     return Response(serializer.data)
 
+
+
+
+def generate_payment_reference():
+    import uuid
+    return f"VYZIO-PAY-{uuid.uuid4().hex[:12].upper()}"
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_ad_payment(request, pk):
+    """
+    Create a Payment instance for the given ad. Uses ListingPrice set by admin
+    for the seller's currency (user.preferred_currency or ad.currency fallback).
+    """
+    user = request.user
+    try:
+        ad = Ad.objects.get(pk=pk, user=user)
+    except Ad.DoesNotExist:
+        return Response({"detail": "Ad not found or not owned by you."}, status=status.HTTP_404_NOT_FOUND)
+
+    if ad.status == "active":
+        return Response({"detail": "Ad already active."}, status=status.HTTP_400_BAD_REQUEST)
+
+    currency = None
+    if getattr(user, "preferred_currency", None):
+        currency = user.preferred_currency.upper()
+    else:
+        currency = (ad.currency or "USD").upper()
+
+    # Look up admin-configured listing fee for this currency
+    listing_fee = None
+    lp = ListingPrice.objects.filter(currency__iexact=currency, active=True).order_by("-is_default").first()
+    if lp:
+        listing_fee = lp.amount
+    else:
+        default_lp = ListingPrice.objects.filter(is_default=True, active=True).first()
+        if default_lp:
+            listing_fee = default_lp.amount
+            currency = default_lp.currency.upper()
+        else:
+            listing_fee = Decimal("0.00")
+
+    amount = Decimal(listing_fee)
+
+    payment_reference = generate_payment_reference()
+
+    method = request.data.get("method", "card")
+
+    payment = Payment.objects.create(
+        user=user,
+        ad=ad,
+        amount=amount,
+        method=method,
+        status="pending",
+        currency=currency,
+        payment_reference=payment_reference
+    )
+
+    # Mark ad as 'pending' (since created but not yet paid/published)
+    ad.status = "pending"
+    ad.save(update_fields=["status"])
+
+    # Provide gateway-ready numbers: e.g. amount in kobo/cents
+    amount_smallest_unit = int((amount * Decimal(100)).quantize(Decimal('1')))
+    paystack_public_key = PAYSTACK_PUBLIC_KEY
+
+    return Response({
+        "payment_reference": payment_reference,
+        "payment_id": payment.id,
+        "amount": str(amount),
+        "amount_smallest_unit": amount_smallest_unit,
+        "currency": currency,
+        "public_key": paystack_public_key,
+    }, status=status.HTTP_201_CREATED)
+
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def confirm_payment_and_activate(request):
+    """
+    Verify payment with Paystack (server-to-server), then mark Payment as confirmed and activate the related Ad.
+    Payload: { "payment_reference": "...", "ad_id": <id> }
+    """
+    user = request.user
+    payment_reference = request.data.get("payment_reference")
+    ad_id = request.data.get("ad_id")
+
+    if not payment_reference or not ad_id:
+        return Response({"detail": "payment_reference and ad_id required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        payment = Payment.objects.select_related("ad", "user").get(payment_reference=payment_reference, ad__id=ad_id)
+    except Payment.DoesNotExist:
+        return Response({"detail": "Payment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only the payment owner may confirm (or allow admin by different logic)
+    if payment.user != user:
+        return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+    if payment.status == "confirmed":
+        return Response({"detail": "Payment already confirmed.", "ad_id": payment.ad.id}, status=status.HTTP_200_OK)
+
+    if not PAYSTACK_SECRET_KEY:
+        logger.error("PAYSTACK_SECRET_KEY not configured in settings.")
+        return Response({"detail": "Payment provider not configured."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Verify using Paystack verify endpoint
+    try:
+        verify_url = f"https://api.paystack.co/transaction/verify/{payment_reference}"
+        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
+        resp = requests.get(verify_url, headers=headers, timeout=10)
+    except requests.RequestException as exc:
+        logger.exception("Error contacting Paystack verify endpoint")
+        return Response({"detail": "Failed to verify payment provider. Try again later."}, status=status.HTTP_502_BAD_GATEWAY)
+
+    if resp.status_code != 200:
+        logger.error("Paystack verify returned status %s: %s", resp.status_code, resp.text)
+        return Response({"detail": "Payment verification failed with gateway."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        resp_json = resp.json()
+    except ValueError:
+        logger.error("Invalid JSON from Paystack verify: %s", resp.text)
+        return Response({"detail": "Invalid response from payment gateway."}, status=status.HTTP_502_BAD_GATEWAY)
+
+    # Ensure structure and success
+    if not resp_json.get("status") or not isinstance(resp_json.get("data"), dict):
+        logger.error("Paystack verification indicates failure: %s", resp_json)
+        return Response({"detail": "Payment verification failed."}, status=status.HTTP_400_BAD_REQUEST)
+
+    data = resp_json["data"]
+    gateway_status = data.get("status")  # expected 'success'
+    if gateway_status != "success":
+        logger.warning("Paystack transaction not successful: %s", gateway_status)
+        return Response({"detail": "Payment not successful according to gateway."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Compare amounts (Paystack amount is in kobo/cents)
+    try:
+        gateway_amount_smallest = int(data.get("amount") or 0)
+    except (TypeError, ValueError):
+        gateway_amount_smallest = None
+
+    if gateway_amount_smallest is not None:
+        try:
+            expected_smallest = int((Decimal(payment.amount) * Decimal(100)).quantize(Decimal("1")))
+        except Exception:
+            expected_smallest = None
+
+        if expected_smallest is not None and gateway_amount_smallest != expected_smallest:
+            logger.error(
+                "Amount mismatch for reference %s: gateway=%s expected=%s",
+                payment_reference, gateway_amount_smallest, expected_smallest
+            )
+            return Response({"detail": "Payment amount mismatch."}, status=status.HTTP_400_BAD_REQUEST)
+
+    gateway_currency = data.get("currency")
+    if gateway_currency and payment.currency and gateway_currency.upper() != payment.currency.upper():
+        logger.error("Currency mismatch for reference %s: gateway=%s expected=%s", payment_reference, gateway_currency, payment.currency)
+        return Response({"detail": "Payment currency mismatch."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # All good -> confirm payment and activate ad
+    try:
+        with transaction.atomic():
+            payment.status = "confirmed"
+            payment.created_at = payment.created_at  
+            if not getattr(payment, "paid_at", None):
+                try:
+                    payment.paid_at = timezone.now()
+                except Exception:
+                    pass
+            payment.save(update_fields=["status"] + (["paid_at"] if hasattr(payment, "paid_at") else []))
+            ad = payment.ad
+            ad.status = "active"
+            ad.is_active = True
+            ad.save(update_fields=["status", "is_active"])
+    except Exception as exc:
+        logger.exception("Error activating ad after payment confirm")
+        return Response({"detail": f"Error activating ad: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({ "detail": "Payment confirmed", "ad_id": ad.id, "status": ad.status, "is_active": ad.is_active}, status=status.HTTP_200_OK)

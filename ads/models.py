@@ -163,7 +163,6 @@ class Ad(models.Model):
         ('sold', 'Sold'),
         ('archived', 'Archived'),
     ]
-
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
@@ -279,6 +278,7 @@ class Payment(models.Model):
     currency = models.CharField(max_length=3, default='USD')  
     crypto_address = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    payment_reference = models.CharField(max_length=255, blank=True, null=True)
 
     def __str__(self):
         return f"{self.user.username} - {self.amount} - {self.status}"
@@ -550,3 +550,24 @@ class Application(models.Model):
                 print(f"Error uploading resume to ImageKit: {e}")
 
         super().save(*args, **kwargs)
+
+
+
+
+class ListingPrice(models.Model):
+    """
+    Admin-configured listing/posting price per currency (and optional plan/type).
+    Site admin sets the fee per currency here (e.g. NGN 1000, USD 5.00).
+    """
+    name = models.CharField(max_length=100, default="Default Listing Fee", help_text="Optional name for this fee (eg: Basic Listing)")
+    currency = models.CharField(max_length=10, db_index=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    is_default = models.BooleanField(default=False, help_text="If true and no match in requested currency, this will be used as fallback.")
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("currency", "name")
+
+    def __str__(self):
+        return f"{self.currency} {self.amount} ({'default' if self.is_default else self.name})"

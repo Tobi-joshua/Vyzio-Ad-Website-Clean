@@ -69,8 +69,13 @@ urlpatterns = [
     path('buyer/<int:buyer_id>/view-history/', views.buyer_view_history, name='buyer-view-history'),
     path('buyer/account-settings/', views.buyer_account_settings, name='buyer-account-settings'),
     path('sellers-dashboard/', views.seller_dashboard, name='seller-dashboard'),
-    path('seller/ads/', views.ads_list_create, name='seller-create'),
+    path('seller/ads/list/', views.ads_list, name='seller-ads-list'),
+    path('seller/ads/create/', views.ads_create, name='seller-ads-create'),
     path("seller/ads/<int:pk>/", views.seller_ad_detail, name="seller-ad-detail"),
+    path("seller/ads/<int:pk>/create-payment/", views.create_ad_payment, name="create-ad-payment"),
+    path("seller/payments/confirm/", views.confirm_payment_and_activate, name="confirm-payment"),
+    path("seller/ads/create-metadata/", views.ads_create_metadata, name="ads_create_metadata"),
+    path("seller/ads/<int:pk>/upload-images/", views.ads_upload_images, name="ads_upload_images"),
 
 
 
