@@ -38,6 +38,7 @@ import SellerDashboard from './pages/SellersPages/SellerDashboard';
 import SellerAdsCategories from './pages/SellersPages/Seller_Ads_Categories';
 import SellerCreateAdForm from './pages/SellersPages/SellerCreateAds';
 import SellerAdsDetails from './pages/SellersPages/Seller_Ads_Details';
+import SellersAdsList from './pages/SellersPages/Seller_Ads_List';
 
 
 
@@ -98,7 +99,9 @@ function App() {
               <Route path="categories" element={<SellerAdsCategories />} />
               <Route path="create/:id/:name/ads" element={<SellerCreateAdForm/>} />
               <Route path="ads/:id/details" element={<SellerAdsDetails/>} />
+              <Route path='ads/list' element={<SellersAdsList/>} />
 
+              
             </Route>
 
 

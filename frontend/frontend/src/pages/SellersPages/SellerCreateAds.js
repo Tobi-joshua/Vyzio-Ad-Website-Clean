@@ -92,6 +92,7 @@ export default function SellerCreateAdFormTwoStep() {
     setTitle(""); setDescription(""); setCity(""); setPrice(""); setHeaderImageFile(null); setExtraImages([]); setAdData(null); setStep(1);
   };
 
+
   // create metadata only
   const createAdMetadata = async () => {
     setError(""); setCreating(true);
@@ -128,10 +129,11 @@ export default function SellerCreateAdFormTwoStep() {
     } finally {
       setCreating(false);
     }
-  };
+};
 
-  // upload images to ad (call after metadata creation)
-  const uploadImagesToAd = async (adIdArg) => {
+
+// upload images to ad (call after metadata creation)
+const uploadImagesToAd = async (adIdArg) => {
     if (!adIdArg && !adData?.id) throw new Error("No ad ID for image upload");
     setUploading(true);
     try {
@@ -211,10 +213,8 @@ export default function SellerCreateAdFormTwoStep() {
   // Paystack launcher
   const PaymentLauncher = ({ config, onSuccess, onClose }) => {
     const initializePayment = usePaystackPayment(config || {});
-    useEffect(() => {
-      if (!config || !config.amount || !config.publicKey) return;
+    if (!config || !config.amount || !config.publicKey) return;
       initializePayment(onSuccess, onClose);
-    }, [config]);
     return null;
   };
 
@@ -237,7 +237,7 @@ export default function SellerCreateAdFormTwoStep() {
   };
 
   // pay now - ensure paymentDetails exist
-  const handlePayNow = async () => {
+const handlePayNow = async () => {
     if (!adData?.id) {
       showToast({ message: "No ad to pay for", severity: "error" });
       return;
@@ -246,7 +246,8 @@ export default function SellerCreateAdFormTwoStep() {
       if (!paymentDetails) {
         await createPaymentInstance(adData.id);
       } else {
-        setPaymentDialogOpen(true);
+        setPaymentDialogOpen(false);
+        creatingPayment(false);
       }
     } catch (err) {
       showToast({ message: err.message || "Payment initialization failed", severity: "error" });
@@ -288,7 +289,10 @@ async function confirmPaymentAndRedirect(response) {
   }
 }
 
-
+const CloseDialogAndNavigate =() =>{
+  setPaymentDialogOpen(false); 
+  navigate("/sellers/dashboard");
+}
 
   // UI
   const accent = "#6C5CE7"; // soft purple accent
@@ -403,7 +407,7 @@ async function confirmPaymentAndRedirect(response) {
 
           <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{ mt: 2 }}>
             <Button variant="outlined" onClick={() => navigate(-1)}>Back to dashboard</Button>
-            <Button variant="contained" sx={{ bgcolor: accent }} onClick={handlePayNow}>
+            <Button variant="contained" sx={{ bgcolor: accent }} onClick={handlePayNow} disabled={!adData || creatingPayment}>
               Pay & Publish
             </Button>
             <Button variant="text" onClick={() => { showToast({ message: "Will publish later", severity: "info" }); navigate("/sellers/dashboard"); }}>
@@ -435,7 +439,7 @@ async function confirmPaymentAndRedirect(response) {
           </Box>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => { setPaymentDialogOpen(false); navigate("/sellers/dashboard"); }}>Pay later</Button>
+          <Button onClick={() => CloseDialogAndNavigate()}>Pay later</Button>
           <Button variant="contained" onClick={handlePayNow} disabled={creatingPayment || !paymentDetails}>
             {creatingPayment ? <CircularProgress size={18} /> : "Pay now"}
           </Button>
@@ -443,13 +447,13 @@ async function confirmPaymentAndRedirect(response) {
       </Dialog>
 
       {/* Payment launcher */}
-      {paymentDetails && paymentDetails.payment_reference && paymentDetails.public_key && (
+      {paymentDetails && paymentDetails.payment_reference && paymentDetails.public_key && !paymentDialogOpen && !creatingPayment && (
         <PaymentLauncher
           config={{
             reference: paymentDetails.payment_reference,
             email: email,
             amount: paymentDetails.amount_smallest_unit || Math.round(Number(paymentDetails.amount || 0) * 100),
-            publicKey: paymentDetails.public_key || process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "",
+            publicKey: paymentDetails.public_key,
             currency: paymentDetails.currency || "NGN",
           }}
           onSuccess={handlePaySuccess}

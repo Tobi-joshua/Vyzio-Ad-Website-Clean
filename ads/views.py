@@ -1362,7 +1362,6 @@ def seller_dashboard(request):
 
 # GET -> list ads
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def ads_list(request):
     qs = Ad.objects.all().order_by("-created_at")
     category = request.query_params.get("category")
@@ -1373,7 +1372,7 @@ def ads_list(request):
     if user:
         qs = qs.filter(user_id=user)
 
-    serializer = AdCreateSerializer(qs, many=True, context={"request": request})
+    serializer = SellerAdSerializer(qs, many=True, context={"request": request})
     return Response(serializer.data)
 
 
@@ -1529,16 +1528,9 @@ def create_ad_payment(request, pk):
     }, status=status.HTTP_201_CREATED)
 
 
-
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def confirm_payment_and_activate(request):
-    """
-    Verify payment with Paystack (server-to-server), then mark Payment as confirmed and activate the related Ad.
-    Payload: { "payment_reference": "...", "ad_id": <id> }
-    """
-    user = request.user
+def confirm_payment(request):
     payment_reference = request.data.get("payment_reference")
     ad_id = request.data.get("ad_id")
 
@@ -1546,92 +1538,23 @@ def confirm_payment_and_activate(request):
         return Response({"detail": "payment_reference and ad_id required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        payment = Payment.objects.select_related("ad", "user").get(payment_reference=payment_reference, ad__id=ad_id)
+        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
     except Payment.DoesNotExist:
-        return Response({"detail": "Payment not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    # Only the payment owner may confirm (or allow admin by different logic)
-    if payment.user != user:
-        return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+    headers = {"Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"}
+    verify_url = f"https://api.paystack.co/transaction/verify/{payment_reference}"
+    r = requests.get(verify_url, headers=headers, timeout=10)
+    data = r.json()
 
-    if payment.status == "confirmed":
-        return Response({"detail": "Payment already confirmed.", "ad_id": payment.ad.id}, status=status.HTTP_200_OK)
+    if data.get("data", {}).get("status") == "success":
+        payment.status = "confirmed"
+        payment.paid_at = timezone.now()
+        payment.save(update_fields=["status", "paid_at"])
+        return Response({
+            "detail": "Payment confirmed",
+            "status": ad.status,
+            "is_active": ad.is_active
+        })
 
-    if not PAYSTACK_SECRET_KEY:
-        logger.error("PAYSTACK_SECRET_KEY not configured in settings.")
-        return Response({"detail": "Payment provider not configured."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    # Verify using Paystack verify endpoint
-    try:
-        verify_url = f"https://api.paystack.co/transaction/verify/{payment_reference}"
-        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
-        resp = requests.get(verify_url, headers=headers, timeout=10)
-    except requests.RequestException as exc:
-        logger.exception("Error contacting Paystack verify endpoint")
-        return Response({"detail": "Failed to verify payment provider. Try again later."}, status=status.HTTP_502_BAD_GATEWAY)
-
-    if resp.status_code != 200:
-        logger.error("Paystack verify returned status %s: %s", resp.status_code, resp.text)
-        return Response({"detail": "Payment verification failed with gateway."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        resp_json = resp.json()
-    except ValueError:
-        logger.error("Invalid JSON from Paystack verify: %s", resp.text)
-        return Response({"detail": "Invalid response from payment gateway."}, status=status.HTTP_502_BAD_GATEWAY)
-
-    # Ensure structure and success
-    if not resp_json.get("status") or not isinstance(resp_json.get("data"), dict):
-        logger.error("Paystack verification indicates failure: %s", resp_json)
-        return Response({"detail": "Payment verification failed."}, status=status.HTTP_400_BAD_REQUEST)
-
-    data = resp_json["data"]
-    gateway_status = data.get("status")  # expected 'success'
-    if gateway_status != "success":
-        logger.warning("Paystack transaction not successful: %s", gateway_status)
-        return Response({"detail": "Payment not successful according to gateway."}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Compare amounts (Paystack amount is in kobo/cents)
-    try:
-        gateway_amount_smallest = int(data.get("amount") or 0)
-    except (TypeError, ValueError):
-        gateway_amount_smallest = None
-
-    if gateway_amount_smallest is not None:
-        try:
-            expected_smallest = int((Decimal(payment.amount) * Decimal(100)).quantize(Decimal("1")))
-        except Exception:
-            expected_smallest = None
-
-        if expected_smallest is not None and gateway_amount_smallest != expected_smallest:
-            logger.error(
-                "Amount mismatch for reference %s: gateway=%s expected=%s",
-                payment_reference, gateway_amount_smallest, expected_smallest
-            )
-            return Response({"detail": "Payment amount mismatch."}, status=status.HTTP_400_BAD_REQUEST)
-
-    gateway_currency = data.get("currency")
-    if gateway_currency and payment.currency and gateway_currency.upper() != payment.currency.upper():
-        logger.error("Currency mismatch for reference %s: gateway=%s expected=%s", payment_reference, gateway_currency, payment.currency)
-        return Response({"detail": "Payment currency mismatch."}, status=status.HTTP_400_BAD_REQUEST)
-
-    # All good -> confirm payment and activate ad
-    try:
-        with transaction.atomic():
-            payment.status = "confirmed"
-            payment.created_at = payment.created_at  
-            if not getattr(payment, "paid_at", None):
-                try:
-                    payment.paid_at = timezone.now()
-                except Exception:
-                    pass
-            payment.save(update_fields=["status"] + (["paid_at"] if hasattr(payment, "paid_at") else []))
-            ad = payment.ad
-            ad.status = "active"
-            ad.is_active = True
-            ad.save(update_fields=["status", "is_active"])
-    except Exception as exc:
-        logger.exception("Error activating ad after payment confirm")
-        return Response({"detail": f"Error activating ad: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    return Response({ "detail": "Payment confirmed", "ad_id": ad.id, "status": ad.status, "is_active": ad.is_active}, status=status.HTTP_200_OK)
+    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)

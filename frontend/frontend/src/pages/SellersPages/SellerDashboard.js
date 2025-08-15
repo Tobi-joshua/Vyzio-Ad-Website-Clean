@@ -215,7 +215,7 @@ const chartData = [
       value={stats.total_active_ads}
       cta="View Ads"
       bgColor="#FFD700" // gold
-      onClick={() => navigate("/sellers/ads")}
+      onClick={() => navigate("/sellers/ads/list")}
     />
   </Grid>
   <Grid item xs={12} sm={6}>

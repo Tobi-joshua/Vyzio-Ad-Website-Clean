@@ -154,7 +154,7 @@ export default function BuyerAppBar({
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
               <Button
                 variant="contained"
-                onClick={() => navigate('/sellers/categories')}
+                onClick={() => navigate('/sellers/ads/list')}
                 startIcon={<PostAddIcon />}
                 sx={{
                   textTransform: 'none',
@@ -254,7 +254,7 @@ export default function BuyerAppBar({
                   <ListItemText primary="Pending Ads" />
                 </ListItemButton>
 
-              <ListItemButton onClick={() => { navigate('/sellers/my-ads'); setIsDrawerOpen(false); }}>
+              <ListItemButton onClick={() => { navigate('/sellers/ads/list'); setIsDrawerOpen(false); }}>
                 <ListItemIcon><CategoryIcon /></ListItemIcon>
                 <ListItemText primary="Approved Ads" />
               </ListItemButton>
