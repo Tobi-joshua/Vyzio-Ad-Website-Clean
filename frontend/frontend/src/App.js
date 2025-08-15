@@ -39,7 +39,7 @@ import SellerAdsCategories from './pages/SellersPages/Seller_Ads_Categories';
 import SellerCreateAdForm from './pages/SellersPages/SellerCreateAds';
 import SellerAdsDetails from './pages/SellersPages/Seller_Ads_Details';
 import SellersAdsList from './pages/SellersPages/Seller_Ads_List';
-
+import SellerCreateAdFormTwoStep from './pages/SellersPages/SellerEditAds';
 
 
 
@@ -100,8 +100,8 @@ function App() {
               <Route path="create/:id/:name/ads" element={<SellerCreateAdForm/>} />
               <Route path="ads/:id/details" element={<SellerAdsDetails/>} />
               <Route path='ads/list' element={<SellersAdsList/>} />
+              <Route path="edit/:id/:name/ads" element={<SellerCreateAdFormTwoStep/>} />
 
-              
             </Route>
 
 

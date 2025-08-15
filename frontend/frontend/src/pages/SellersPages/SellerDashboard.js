@@ -29,6 +29,7 @@ import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import { useNavigate } from "react-router-dom";
 import { SellerDashboardContext } from "./index";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,Cell } from "recharts";
+import { API_BASE_URL } from "../../constants";
 
 export default function SellerDashboard(){
   const theme = useTheme();
@@ -86,14 +87,17 @@ export default function SellerDashboard(){
     }
   };
 
+
   // ad action handlers
-  const onEditAd = (adId) => navigate(`/seller/ads/${adId}/edit`);
+  const onEditAd = (adId, catName) => navigate(`/sellers/edit/${adId}/${encodeURIComponent(catName)}/ads`);
+  
   const onDeleteAd = async (adId) => {
     if (!window.confirm("Delete this ad? This action cannot be undone.")) return;
     try {
-      const resp = await fetch(`/api/ads/${adId}/`, {
+      const resp = await fetch(`${API_BASE_URL}/api/seller/delete/ads/${adId}/`, {
         method: "DELETE",
         credentials: "include",
+        headers:{Authorization: `Bearer ${token}`},
       });
       if (resp.ok) {
         window.location.reload();
@@ -256,7 +260,7 @@ const chartData = [
     <Paper sx={{ p: 2, borderRadius: 2, bgcolor: "#f5f5f5" }}>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
         <Typography variant="h6">My Ads</Typography>
-        <Button size="small" onClick={() => navigate("/seller/ads/list")}>
+        <Button size="small" onClick={() => navigate("/sellers/ads/list")}>
           View all
         </Button>
       </Box>
@@ -306,7 +310,7 @@ const chartData = [
                     </Stack>
                   </CardContent>
                   <Box sx={{ display: "flex", gap: 1, p: 1 }}>
-                    <Button size="small" startIcon={<EditIcon />} onClick={() => onEditAd(ad.id)}>Edit</Button>
+                    <Button size="small" startIcon={<EditIcon />} onClick={() => onEditAd(ad.id,ad.catName)}>Edit</Button>
                     <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => onDeleteAd(ad.id)}>Delete</Button>
                     <Button size="small" onClick={() => navigate(`sellers/ads/${ad.id}/details`)}>View</Button>
                   </Box>

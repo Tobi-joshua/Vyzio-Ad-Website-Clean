@@ -76,6 +76,7 @@ urlpatterns = [
     path("seller/payments/confirm/", views.confirm_payment, name="confirm-payment"),
     path("seller/ads/create-metadata/", views.ads_create_metadata, name="ads_create_metadata"),
     path("seller/ads/<int:pk>/upload-images/", views.ads_upload_images, name="ads_upload_images"),
+    path("seller/delete/ads/<int:ad_id>/", views.delete_seller_ad, name="delete_seller_ad"),
 
 
 

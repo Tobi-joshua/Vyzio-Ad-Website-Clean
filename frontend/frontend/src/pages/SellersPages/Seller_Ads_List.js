@@ -1,3 +1,4 @@
+// SellersAdsList.jsx
 import React, { useEffect, useState, useContext, useMemo } from "react";
 import {
   Box, Button, Container, Grid, Typography, Card, CardContent,
@@ -18,7 +19,6 @@ import { API_BASE_URL } from "../../constants";
 import { SellerDashboardContext } from "./index";
 import { useWebToast } from "../../hooks/useWebToast";
 
-// small constants
 const STATUS_COLORS = { draft: "default", pending: "warning", active: "success", paused: "info", sold: "secondary", archived: "default" };
 const ALL_STATUSES = ["all", "draft", "pending", "active", "paused", "sold", "archived"];
 const currencySymbols = { USD: "$", NGN: "₦", EUR: "€", GBP: "£" };
@@ -49,8 +49,8 @@ export default function SellersAdsList() {
   const [verifyingPayment, setVerifyingPayment] = useState(false);
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [successIsActive, setSuccessIsActive] = useState(false); // whether server made ad active
 
-  // helper headers
   function getAuthHeaders() {
     const headers = { "Content-Type": "application/json" };
     const token = contextToken || localStorage.getItem("token");
@@ -58,7 +58,7 @@ export default function SellersAdsList() {
     return headers;
   }
 
-  // --- Data fetching (small clear function) ---
+  // fetch ads
   async function fetchAds() {
     setLoading(true);
     try {
@@ -74,12 +74,8 @@ export default function SellersAdsList() {
     }
   }
 
-  useEffect(() => {
-    fetchAds();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  useEffect(() => { fetchAds(); /*eslint-disable-next-line*/ }, [id]);
 
-  // aggregates for top bar
   const aggregates = useMemo(() => {
     const totalAds = ads.length;
     const byStatus = ads.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {});
@@ -88,14 +84,13 @@ export default function SellersAdsList() {
     return { totalAds, byStatus, totalViews, totalMessages };
   }, [ads]);
 
-  // filtered list
   const filteredAds = useMemo(() => {
     return ads
       .filter(ad => filterStatus === "all" ? true : (ad.status || "draft") === filterStatus)
       .filter(ad => (ad.title || "").toLowerCase().includes(search.toLowerCase()));
   }, [ads, search, filterStatus]);
 
-  // --- Save toggle (kept lean) ---
+  // toggle save
   const toggleSave = async (e, adId) => {
     e.stopPropagation();
     if (savingMap[adId]) return;
@@ -105,14 +100,12 @@ export default function SellersAdsList() {
     const method = currentlySaved ? "DELETE" : "POST";
     const url = `${API_BASE_URL}/api/ads/${adId}/save/`;
 
-    // optimistic UI
     setAds(prev => prev.map(a => a.id === adId ? { ...a, is_saved: !currentlySaved } : a));
     setSavingMap(m => ({ ...m, [adId]: true }));
 
     try {
       const res = await fetch(url, { method, headers: getAuthHeaders(), credentials: "include", body: method === "POST" ? JSON.stringify({}) : undefined });
       if (![200,201,204].includes(res.status)) {
-        // revert
         setAds(prev => prev.map(a => a.id === adId ? { ...a, is_saved: currentlySaved } : a));
         showToast({ message: "Failed to toggle save", severity: "error" });
       }
@@ -125,10 +118,12 @@ export default function SellersAdsList() {
     }
   };
 
-  // --- Payment: create payment instance (server sets ad pending or similar) ---
+  // create payment instance
   async function createPaymentInstance(adId) {
     if (!adId) throw new Error("No ad id");
+    // display spinner on the ad Pay button
     setCreatingPayment(true);
+    setPaymentAdId(adId);
     try {
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/create-payment/`, {
         method: "POST", headers: getAuthHeaders(), credentials: "include", body: JSON.stringify({})
@@ -139,17 +134,17 @@ export default function SellersAdsList() {
       }
       const json = await res.json();
       setPaymentDetails(json);
-      setPaymentAdId(adId);
       setPaymentDialogOpen(true);
-      // optimistic status change so UI shows pending/pay option
+      // optimistic UI: show pending indicator on the ad
       setAds(prev => prev.map(a => a.id === adId ? { ...a, status: "pending" } : a));
       return json;
     } finally {
+      // keep creatingPayment true while user chooses to launch checkout; callers will clear if needed
       setCreatingPayment(false);
     }
   }
 
-  // --- Payment: confirm on server ---
+  // confirm payment on server (simple wrapper)
   async function confirmPaymentOnServer({ payment_reference, ad_id }) {
     const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
       method: "POST", headers: getAuthHeaders(), credentials: "include", body: JSON.stringify({ payment_reference, ad_id })
@@ -161,11 +156,12 @@ export default function SellersAdsList() {
     return res.json();
   }
 
-  // confirm + update local state after paystack success (async)
+  // confirm + update local
   async function confirmPaymentAndUpdate(response, adId) {
     if (!adId) {
       showToast({ message: "Missing ad id for verification", severity: "error" });
       setVerifyingPayment(false);
+      setCreatingPayment(false);
       return;
     }
 
@@ -174,7 +170,6 @@ export default function SellersAdsList() {
       const payload = { payment_reference: response.reference, ad_id: adId };
       const serverResp = await confirmPaymentOnServer(payload);
 
-      // update local ad state from server
       setAds(prev => prev.map(a => a.id === adId ? {
         ...a,
         status: serverResp.status ?? serverResp.ad?.status ?? a.status,
@@ -184,32 +179,35 @@ export default function SellersAdsList() {
         ...(serverResp.ad ?? {})
       } : a));
 
-      // done verifying
       setVerifyingPayment(false);
+      setCreatingPayment(false);
       setPaymentDialogOpen(false);
       setPaymentDetails(null);
       setPaymentAdId(null);
 
-      // show success modal with message according to server's status
-      if ((serverResp.status ?? serverResp.ad?.status) === "active") {
+      const finalStatus = (serverResp.status ?? serverResp.ad?.status);
+      if (finalStatus === "active") {
+        setSuccessIsActive(true);
         setSuccessMessage(serverResp.detail || "Payment confirmed — your ad is active.");
       } else {
-        setSuccessMessage(serverResp.detail || "Payment received. Your ad is awaiting admin approval. You will be notified by email.");
+        setSuccessIsActive(false);
+        setSuccessMessage(serverResp.detail || "Payment received. Your ad is awaiting admin approval. You will be notified by email when approved.");
       }
       setSuccessModalOpen(true);
     } catch (err) {
       console.error("Payment confirmation error:", err);
       setVerifyingPayment(false);
+      setCreatingPayment(false);
       setPaymentDetails(null);
       setPaymentAdId(null);
       showToast({ message: err.message || "Failed to confirm payment", severity: "error" });
     }
   }
 
-  // --- Paystack config and launch ---
+  // paystack config
   const paystackConfig = paymentDetails ? {
-    publicKey: paymentDetails.public_key || process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "",
-    email: email || localStorage.getItem("email") || "",
+    publicKey: paymentDetails.public_key,
+    email: email,
     amount: Math.round((Number(paymentDetails.amount || 0) * 100) || 0),
     currency: paymentDetails.currency || "NGN",
     reference: paymentDetails.payment_reference,
@@ -217,63 +215,64 @@ export default function SellersAdsList() {
 
   const initializePayment = usePaystackPayment(paystackConfig);
 
-const onPaystackSuccess = (response) => {
-  setVerifyingPayment(true);
-  fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
-    method: "POST",
-    headers: getAuthHeaders(),
-    credentials: "include",
-    body: JSON.stringify({
-      payment_reference: response.reference,
-      ad_id: paymentAdId
-    })
-  })
-    .then(res => res.json())
-    .then(data => {
-      setVerifyingPayment(false);
-      if (data.status === "active") {
-        showToast({ message: "Payment confirmed — your ad is active.", severity: "success" });
-      } else {
-        showToast({ message: data.detail, severity: "info" });
-      }
-      fetchAds(); 
-    })
-    .catch(() => {
-      setVerifyingPayment(false);
-      showToast({ message: "Error confirming payment", severity: "error" });
-    });
-};
-
+  // synchronous wrapper for Paystack success
+  const onPaystackSuccess = (response) => {
+    // Immediately show verifying modal, clear dialog and details
+    setPaymentDialogOpen(false);
+    setPaymentDetails(null);
+    setVerifyingPayment(true);
+    setCreatingPayment(false);
+    confirmPaymentAndUpdate(response, paymentAdId);
+  };
 
   const onPaystackClose = () => {
+    setCreatingPayment(false);
     showToast({ message: "Payment window closed — you can complete payment later.", severity: "info" });
     setPaymentDialogOpen(false);
     setPaymentDetails(null);
     setPaymentAdId(null);
   };
 
-  // small helper to start the flow (create payment then open dialog)
+  // start payment flow (used by Pay button)
   async function startPaymentFlow(adId) {
     try {
+      setCreatingPayment(true); // spinner while creating instance
       await createPaymentInstance(adId);
+      // keep creatingPayment false — user will click Launch Checkout (spinner on that button)
+      setCreatingPayment(false);
     } catch (err) {
       console.error(err);
       showToast({ message: err.message || "Failed to initialize payment", severity: "error" });
+      setCreatingPayment(false);
+      setPaymentAdId(null);
     }
   }
 
   // UI handlers
   const handleStartPaymentFlow = (e, adId) => { e.stopPropagation(); startPaymentFlow(adId); };
-  const handlePublishFromDraft = (e, adId) => { e.stopPropagation(); startPaymentFlow(adId); };
-  const handleEdit = (e, adId) => { e.stopPropagation(); navigate(`/sellers/ads/${adId}/edit`); };
+  const handleEdit = (e, adId, catName) => { e.stopPropagation(); navigate(`/sellers/edit/${adId}/${encodeURIComponent(catName)}/ads`); };
 
-  // close success modal and navigate to details
-  const handleSuccessClose = (goToDetails = true) => {
+  // Launch Checkout click (in dialog)
+  const handleLaunchCheckout = () => {
+    if (!paymentDetails) return;
+    setCreatingPayment(true); // spinner on Launch Checkout
+    try {
+      // correct usage: pass callbacks as positional args
+      initializePayment({onSuccess:onPaystackSuccess, onClose:onPaystackClose});
+      // initializePayment opens the Paystack widget immediately
+    } catch (err) {
+      console.error("Could not initialize paystack:", err);
+      setCreatingPayment(false);
+      showToast({ message: "Could not initialize payment, try again later", severity: "error" });
+    }
+  };
+
+  const handleSuccessClose = (goToDetails = false) => {
     setSuccessModalOpen(false);
-    if (goToDetails && paymentAdId) {
+    // if ad active and user wants to view, allow
+    if (goToDetails && successIsActive && paymentAdId) {
       navigate(`/sellers/ads/${paymentAdId}/details`);
     } else {
-      // reload list to show updated statuses
       fetchAds();
     }
   };
@@ -338,69 +337,167 @@ const onPaystackSuccess = (response) => {
         {filteredAds.length === 0 ? (
           <Typography align="center" color="text.secondary" sx={{ mt: 6 }}>No ads found.</Typography>
         ) : (
-          <Grid container spacing={2}>
-            {filteredAds.map(ad => {
-              const { id: adId, title, header_image_url, images, category, city, price, currency, status, view_count, message_count, created_at } = ad;
-              const thumb = header_image_url || (images && images[0]?.image_url) || null;
-              return (
-                <Grid key={adId} item xs={12} sm={6} md={4}>
-                  <Card variant="outlined" sx={{ display: "flex", flexDirection: "column", height: 320, borderRadius: 2, overflow: "hidden", "&:hover": { boxShadow: 6 } }}>
-                    {thumb ? <CardMedia component="img" image={thumb} alt={title} sx={{ height: 120, objectFit: "cover" }} />
-                      : (<Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: 120, bgcolor: "grey.100" }}>
-                          <Avatar sx={{ bgcolor: theme.palette.primary.main }}><CategoryIcon /></Avatar>
-                        </Box>)}
+<Grid
+  container
+  spacing={2}
+  justifyContent="center"   // center grid columns horizontally
+  alignItems="stretch"      // stretch items vertically so cards match height
+>
+  {filteredAds.map(ad => {
+    const { id: adId, title, header_image_url, images, category, city, price, currency, status, view_count, message_count, created_at } = ad;
+    const thumb = header_image_url || (images && images[0]?.image_url) || null;
 
-                    <CardContent sx={{ py: 1.25, px: 2, flexGrow: 1 }}>
-                      <Typography variant="subtitle1" fontWeight={700}
-                        sx={{ mb: 0.5, lineHeight: 1.1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {title}
-                      </Typography>
+    return (
+      <Grid
+        key={adId}
+        item
+        xs={12}
+        sm={12}
+        md={4}
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          // ensure each grid column uses full available height for equal card heights
+          alignItems: "stretch",
+        }}
+      >
+        <Card
+          variant="outlined"
+          sx={{
+            // keep card widths consistent while allowing responsiveness:
+            width: "100%",
+            maxWidth: 360,            // card won't grow beyond this so rows align nicely
+            display: "flex",
+            flexDirection: "column",
+            height: 320,
+            borderRadius: 2,
+            overflow: "hidden",
+            "&:hover": { boxShadow: 6 },
+            mx: "auto",               // center inside the grid item (defensive)
+          }}
+        >
+          {thumb ? (
+            <CardMedia component="img" image={thumb} alt={title} sx={{ height: 120, objectFit: "cover" }} />
+          ) : (
+            <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: 120, bgcolor: "grey.100" }}>
+              <Avatar sx={{ bgcolor: theme.palette.primary.main }}><CategoryIcon /></Avatar>
+            </Box>
+          )}
 
-                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>{category?.name || "Uncategorized"} • {city || "—"}</Typography>
+          <CardContent sx={{ py: 1.25, px: 2, flexGrow: 1 }}>
+            <Typography
+              variant="subtitle1"
+              fontWeight={700}
+              sx={{
+                mb: 0.5,
+                lineHeight: 1.1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {title}
+            </Typography>
 
-                      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                        <Typography variant="h6" sx={{ fontWeight: 700 }}>{currencySymbols[currency] || currency} {price}</Typography>
-                        <Chip label={status?.charAt(0)?.toUpperCase() + status?.slice(1)} color={STATUS_COLORS[status] || "default"} size="small" />
-                      </Stack>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              {category?.name || "Uncategorized"} • {city || "—"}
+            </Typography>
 
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Typography variant="caption" color="text.secondary">Views: {view_count ?? 0}</Typography>
-                        <Typography variant="caption" color="text.secondary">Msgs: {message_count ?? 0}</Typography>
-                        <Typography variant="caption" color="text.secondary">Posted: {new Date(created_at).toLocaleDateString()}</Typography>
-                      </Stack>
-                    </CardContent>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>{currencySymbols[currency] || currency} {price}</Typography>
+              <Chip label={status?.charAt(0)?.toUpperCase() + status?.slice(1)} color={STATUS_COLORS[status] || "default"} size="small" />
+            </Stack>
 
-                    <Divider />
+            {/* pill stats */}
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Box
+                component="span"
+                sx={{
+                  px: 1.5,
+                  py: 0.5,
+                  borderRadius: '16px',
+                  bgcolor: 'primary.light',
+                  color: 'primary.contrastText',
+                  fontSize: '0.75rem',
+                  fontWeight: 500
+                }}
+              >
+                Views: {view_count ?? 0}
+              </Box>
 
-                    <CardActions sx={{ px: 1, py: 1, gap: 1, justifyContent: "space-between" }}>
-                      <Box sx={{ display: "flex", gap: 1 }}>
-                        <Button size="small" variant="contained" onClick={(e) => { e.stopPropagation(); navigate(`/sellers/ads/${adId}/details`); }}>View</Button>
-                        <Button size="small" variant="outlined" onClick={(e) => { e.stopPropagation(); handleEdit(e, adId); }}>Edit</Button>
+              <Box
+                component="span"
+                sx={{
+                  px: 1.5,
+                  py: 0.5,
+                  borderRadius: '16px',
+                  bgcolor: 'secondary.light',
+                  color: 'secondary.contrastText',
+                  fontSize: '0.75rem',
+                  fontWeight: 500
+                }}
+              >
+                Msgs: {message_count ?? 0}
+              </Box>
 
-                        {status === "draft" && (
-                          <Button size="small" color="primary" variant="contained" onClick={(e) => handlePublishFromDraft(e, adId)}>
-                            {creatingPayment && paymentAdId === adId ? <CircularProgress size={16} color="inherit" /> : "Publish"}
-                          </Button>
-                        )}
+              <Box
+                component="span"
+                sx={{
+                  px: 1.5,
+                  py: 0.5,
+                  borderRadius: '16px',
+                  bgcolor: 'success.light',
+                  color: 'success.contrastText',
+                  fontSize: '0.75rem',
+                  fontWeight: 500
+                }}
+              >
+                Posted: {new Date(created_at).toLocaleDateString()}
+              </Box>
+            </Stack>
+          </CardContent>
 
-                        {status === "pending" && (
-                          <Button size="small" color="warning" variant="contained" onClick={(e) => handleStartPaymentFlow(e, adId)}>Pay</Button>
-                        )}
-                      </Box>
+          <Divider />
 
-                      <Tooltip title={ad.is_saved ? "Unsave" : "Save"}>
-                        <span>
-                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleSave(e, adId); }}>
-                            {ad.is_saved ? <BookmarkIcon color="primary" /> : <BookmarkBorderIcon />}
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                    </CardActions>
-                  </Card>
-                </Grid>
-              );
-            })}
-          </Grid>
+          <CardActions sx={{ px: 1, py: 1, gap: 1, justifyContent: "space-between" }}>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <Button size="small" variant="contained" onClick={(e) => { e.stopPropagation(); navigate(`/sellers/ads/${adId}/details`); }}>View</Button>
+              <Button size="small" variant="outlined" onClick={(e) => { e.stopPropagation(); handleEdit(e, adId, category?.name); }}>Edit</Button>
+
+              {/* PAY only for draft */}
+              {status === "draft" && (
+                <Button
+                  size="small"
+                  color="primary"
+                  variant="contained"
+                  onClick={(e) => { e.stopPropagation(); handleStartPaymentFlow(e, adId); }}
+                >
+                  {creatingPayment && paymentAdId === adId ? <CircularProgress size={16} color="inherit" /> : "Pay"}
+                </Button>
+              )}
+
+              {/* pending: show Under review indicator, no Pay button */}
+              {status === "pending" && (
+                <Button size="small" variant="outlined" color="warning" disabled>
+                  Under review
+                </Button>
+              )}
+            </Box>
+
+            <Tooltip title={ad.is_saved ? "Unsave" : "Save"}>
+              <span>
+                <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleSave(e, adId); }}>
+                  {ad.is_saved ? <BookmarkIcon color="primary" /> : <BookmarkBorderIcon />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          </CardActions>
+        </Card>
+      </Grid>
+    );
+  })}
+</Grid>
+
         )}
 
         {/* Payment dialog (launches Paystack) */}
@@ -420,26 +517,15 @@ const onPaystackSuccess = (response) => {
             <Button
               variant="contained"
               disabled={!paymentDetails || creatingPayment}
-              onClick={() => {
-                try {
-                  initializePayment({onPaystackSuccess, onPaystackClose});
-                } catch (err) {
-                  console.error("Could not initialize paystack:", err);
-                  showToast({ message: "Could not initialize payment, try again later", severity: "error" });
-                }
-              }}
+              onClick={handleLaunchCheckout}
             >
-              {creatingPayment ? <CircularProgress size={18} /> : "Launch Checkout"}
+              {creatingPayment ? <CircularProgress size={18} color="inherit" /> : "Launch Checkout"}
             </Button>
           </DialogActions>
         </Dialog>
 
-        {/* Verifying dialog: non-dismissible while server verifies payment */}
-        <Dialog
-          open={verifyingPayment}
-          onClose={() => {}} // prevent closing while verifying
-          PaperProps={{ sx: { p: 2, width: 380 } }}
-        >
+        {/* Verifying dialog */}
+        <Dialog open={verifyingPayment} onClose={() => {}} PaperProps={{ sx: { p: 2, width: 380 } }}>
           <DialogTitle>Verifying payment</DialogTitle>
           <DialogContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 2 }}>
             <CircularProgress />
@@ -450,15 +536,21 @@ const onPaystackSuccess = (response) => {
           </DialogContent>
         </Dialog>
 
-        {/* Success modal shown after server confirms (or pending admin review) */}
+        {/* Success modal */}
         <Dialog open={successModalOpen} onClose={() => handleSuccessClose(false)}>
-          <DialogTitle>Payment received</DialogTitle>
+          <DialogTitle>{successIsActive ? "Payment received" : "Payment received — awaiting approval"}</DialogTitle>
           <DialogContent>
             <Typography>{successMessage}</Typography>
+            {!successIsActive && (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+                Our team will review your ad. You will get an email when it is approved.
+              </Typography>
+            )}
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => { handleSuccessClose(false); }}>Back to ads</Button>
-            <Button variant="contained" onClick={() => { handleSuccessClose(true); }}>View ad</Button>
+            {/* If ad is active allow "View ad", otherwise only let them go back to ads */}
+            <Button onClick={() => handleSuccessClose(false)}>{successIsActive ? "Back to ads" : "OK"}</Button>
+            {successIsActive && <Button variant="contained" onClick={() => handleSuccessClose(true)}>View ad</Button>}
           </DialogActions>
         </Dialog>
       </Container>

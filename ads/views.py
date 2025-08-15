@@ -1230,10 +1230,6 @@ def buyer_account_settings(request):
 
 
 
-
-
-
-
 """ Sellers Homepage """
 
 @api_view(['GET'])
@@ -1270,6 +1266,7 @@ def seller_dashboard(request):
             "status": a.status,
             "is_active": a.is_active,
             "view_count": a.view_count,
+            "catName":a.category.name if getattr(a, "category", None) else None,
             "created_at": a.created_at.isoformat() if getattr(a, "created_at", None) else None,
         })
 
@@ -1393,6 +1390,8 @@ def ads_create(request):
 
 
 
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def ads_create_metadata(request):
@@ -1511,7 +1510,7 @@ def create_ad_payment(request, pk):
     )
 
     # Mark ad as 'pending' (since created but not yet paid/published)
-    ad.status = "pending"
+    ad.status = "draft"
     ad.save(update_fields=["status"])
 
     # Provide gateway-ready numbers: e.g. amount in kobo/cents
@@ -1542,15 +1541,16 @@ def confirm_payment(request):
     except Payment.DoesNotExist:
         return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    headers = {"Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"}
+    # Simple Paystack verification
+    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
     verify_url = f"https://api.paystack.co/transaction/verify/{payment_reference}"
     r = requests.get(verify_url, headers=headers, timeout=10)
     data = r.json()
-
     if data.get("data", {}).get("status") == "success":
         payment.status = "confirmed"
-        payment.paid_at = timezone.now()
-        payment.save(update_fields=["status", "paid_at"])
+        payment.created_at = timezone.now()
+        payment.save()
+        ad = payment.ad
         return Response({
             "detail": "Payment confirmed",
             "status": ad.status,
@@ -1558,3 +1558,13 @@ def confirm_payment(request):
         })
 
     return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_seller_ad(request, ad_id):
+    ad = get_object_or_404(Ad, id=ad_id, user=request.user)
+    ad.delete()
+    return Response({"detail": "Ad deleted successfully."}, status=status.HTTP_204_NO_CONTENT)

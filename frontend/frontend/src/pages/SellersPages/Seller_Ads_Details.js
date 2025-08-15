@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useContext } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Box, Typography, Button, Card, CardContent, CardMedia, Avatar,
@@ -11,6 +11,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import SendIcon from "@mui/icons-material/Send";
 import ReplyIcon from "@mui/icons-material/Reply";
 import { API_BASE_URL } from "../../constants";
+import { SellerDashboardContext } from "./index";
 
 const SellerAdsDetails = () => {
   const { id } = useParams();
@@ -30,8 +31,7 @@ const SellerAdsDetails = () => {
   const [replyTo, setReplyTo] = useState(null); 
   const [replyText, setReplyText] = useState("");
   const [sendingReply, setSendingReply] = useState(false);
-
-  const token = localStorage.getItem("token");
+  const { userId, token, firstName, email } = useContext(SellerDashboardContext || {});
   const getAuthHeaders = () => ({
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),

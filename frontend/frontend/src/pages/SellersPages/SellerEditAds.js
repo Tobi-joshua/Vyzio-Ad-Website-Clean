@@ -1,5 +1,4 @@
-// SellerCreateAdFormTwoStep.jsx
-import React, { useState, useContext } from "react";
+import React, { useState, useContext, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Box, Typography, TextField, Button, CircularProgress,
@@ -30,7 +29,7 @@ export default function SellerCreateAdFormTwoStep() {
   const { id: categoryId, name: catName } = useParams();
   const navigate = useNavigate();
   const showToast = useWebToast();
-  const { token, email } = useContext(SellerDashboardContext || {});
+  const { userId, token, firstName, email } = useContext(SellerDashboardContext || {});
 
   // metadata
   const [title, setTitle] = useState("");
@@ -51,7 +50,7 @@ export default function SellerCreateAdFormTwoStep() {
   const [error, setError] = useState("");
   const [adData, setAdData] = useState(null);
 
-  // payment state
+  // payment
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [creatingPayment, setCreatingPayment] = useState(false); // spinner for Pay & Publish / Launch Checkout
   const [paymentDetails, setPaymentDetails] = useState(null);
@@ -61,13 +60,14 @@ export default function SellerCreateAdFormTwoStep() {
   const [verifyingPayment, setVerifyingPayment] = useState(false);
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
-  const [successIsActive, setSuccessIsActive] = useState(false);
 
+  
   const getAuthHeaders = () => {
-    const h = { "Content-Type": "application/json" };
+    const h = {};
     if (token) h["Authorization"] = `Bearer ${token}`;
     return h;
   };
+
 
   // file handlers
   const handleHeaderImageChange = (e) => {
@@ -111,7 +111,10 @@ export default function SellerCreateAdFormTwoStep() {
 
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/create-metadata/`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
         credentials: "include",
         body: JSON.stringify(payload),
       });
@@ -144,7 +147,7 @@ export default function SellerCreateAdFormTwoStep() {
 
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adIdArg || adData.id}/upload-images/`, {
         method: "POST",
-        headers: { ...(getAuthHeaders() || {}) }, // do not set Content-Type manually for FormData
+        headers: { ...getAuthHeaders() }, // don't set Content-Type (browser will set multipart boundary)
         body: fd,
         credentials: "include",
       });
@@ -169,13 +172,15 @@ export default function SellerCreateAdFormTwoStep() {
   const createPaymentInstance = async (adIdArg) => {
     const adId = adIdArg || adData?.id;
     if (!adId) throw new Error("No ad ID for payment");
-    // spinner on Pay & Publish while waiting for server response
     setCreatingPayment(true);
     setPaymentAdId(adId);
     try {
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/create-payment/`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
         credentials: "include",
         body: JSON.stringify({}),
       });
@@ -186,11 +191,12 @@ export default function SellerCreateAdFormTwoStep() {
       const json = await res.json();
       setPaymentDetails(json);
       setPaymentDialogOpen(true);
-      // mark ad pending locally so UI reflects payment step
+      // optimistic: ad pending so user can click Pay immediately
       setAdData(prev => prev ? { ...prev, status: "pending" } : prev);
       return json;
     } finally {
-      // keep creatingPayment false here so the button reflects the dialog now
+      // keep creatingPayment true briefly so UI shows spinner; caller will clear it when launching checkout
+      // but reset it here only if an error occurred (we can't detect easily), so ensure callers set it appropriately
       setCreatingPayment(false);
     }
   };
@@ -199,7 +205,10 @@ export default function SellerCreateAdFormTwoStep() {
   const confirmPaymentOnServer = async ({ payment_reference, ad_id }) => {
     const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
       method: "POST",
-      headers: getAuthHeaders(),
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+      },
       credentials: "include",
       body: JSON.stringify({ payment_reference, ad_id }),
     });
@@ -224,7 +233,7 @@ export default function SellerCreateAdFormTwoStep() {
       const payload = { payment_reference: response.reference, ad_id: adId };
       const serverResp = await confirmPaymentOnServer(payload);
 
-      // update local ad object if returned
+      // if server returns updated ad object / status, update local adData
       if (serverResp?.ad) {
         setAdData(prev => ({ ...(prev || {}), ...(serverResp.ad || {}) }));
       }
@@ -235,11 +244,10 @@ export default function SellerCreateAdFormTwoStep() {
       setPaymentDetails(null);
       setPaymentAdId(null);
 
+      // show appropriate success message
       if ((serverResp.status ?? serverResp.ad?.status) === "active") {
-        setSuccessIsActive(true);
         setSuccessMessage(serverResp.detail || "Payment confirmed — your ad is active.");
       } else {
-        setSuccessIsActive(false);
         setSuccessMessage(serverResp.detail || "Payment received. Your ad is awaiting admin approval. You will be notified by email when approved.");
       }
       setSuccessModalOpen(true);
@@ -253,7 +261,7 @@ export default function SellerCreateAdFormTwoStep() {
     }
   }
 
-  // Paystack config (hook)
+  // Paystack config (use hook with latest paymentDetails)
   const paystackConfig = paymentDetails ? {
     publicKey: paymentDetails.public_key || process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "",
     email: email || localStorage.getItem("email") || "",
@@ -266,10 +274,12 @@ export default function SellerCreateAdFormTwoStep() {
 
   // synchronous callbacks for Paystack (must NOT be async)
   const onPaystackSuccess = (response) => {
-    // Minimal synchronous work: show verifying modal and call async confirm
+    // keep this function synchronous:
+    // - show verifying UI
     setPaymentDialogOpen(false);
     setPaymentDetails(null);
     setVerifyingPayment(true);
+    // call async confirmation (do not await here)
     confirmPaymentAndRedirect(response, paymentAdId || adData?.id);
   };
 
@@ -285,12 +295,20 @@ export default function SellerCreateAdFormTwoStep() {
   // UI handlers
   const handleMetadataSubmit = async (e) => {
     e?.preventDefault?.();
-    try { await createAdMetadata(); } catch {}
+    try {
+      await createAdMetadata();
+    } catch (err) {
+      // error already handled in createAdMetadata
+    }
   };
 
   const handleImagesSubmit = async (e) => {
     e?.preventDefault?.();
-    try { await uploadImagesToAd(); } catch {}
+    try {
+      await uploadImagesToAd();
+    } catch (err) {
+      // handled in uploadImagesToAd
+    }
   };
 
   // when user clicks "Pay & Publish" in step 3
@@ -299,18 +317,19 @@ export default function SellerCreateAdFormTwoStep() {
       showToast({ message: "No ad to pay for", severity: "error" });
       return;
     }
-
-    // If we already created a payment instance, open the dialog (user may have closed it)
+    // if we already have paymentDetails, skip create step and open checkout
     if (paymentDetails && paymentDetails.payment_reference) {
-      setPaymentDialogOpen(true);
+      // directly launch checkout
+      launchCheckout();
       return;
     }
 
-    // create new payment instance, show dialog when returned
+    // create payment instance then wait for paymentDetails and open dialog
     try {
-      setCreatingPayment(true); // spinner on Pay & Publish
+      setCreatingPayment(true); // spinner on Pay button
       await createPaymentInstance(adData.id);
-      // createPaymentInstance sets creatingPayment -> false; dialog is opened
+      // leave creatingPayment true until user clicks Launch Checkout (we want visual cue)
+      // Note: createPaymentInstance sets paymentDialogOpen(true), showing fee & Launch button.
     } catch (err) {
       showToast({ message: err.message || "Payment initialization failed", severity: "error" });
       setCreatingPayment(false);
@@ -322,9 +341,9 @@ export default function SellerCreateAdFormTwoStep() {
     if (!paymentDetails) return;
     setCreatingPayment(true);
     try {
-      // IMPORTANT: use positional args
-      initializePayment({onSuccess:onPaystackSuccess, onClose:onPaystackClose});
-      // spinner will be cleared in onPaystackSuccess/onPaystackClose
+      // initializePayment expects callbacks as positional args
+       initializePayment({onSuccess:onPaystackSuccess, onClose:onPaystackClose});
+      // initialization opens paystack; we keep creatingPayment until either onPaystackSuccess/Close runs
     } catch (err) {
       console.error("Could not initialize paystack:", err);
       setCreatingPayment(false);
@@ -342,9 +361,10 @@ export default function SellerCreateAdFormTwoStep() {
   // success modal close
   const handleSuccessClose = (viewAd = false) => {
     setSuccessModalOpen(false);
-    if (viewAd && successIsActive && adData?.id) {
+    if (viewAd && adData?.id) {
       navigate(`/sellers/ads/${adData.id}/details`);
     } else {
+      // refresh / redirect to dashboard
       navigate("/sellers/dashboard");
     }
   };
@@ -366,7 +386,7 @@ export default function SellerCreateAdFormTwoStep() {
       </Stack>
 
       {step === 1 && (
-        <form onSubmit={handleMetadataSubmit}>
+        <form onSubmit={async (e) => { e.preventDefault(); try { await createAdMetadata(); } catch {} }}>
           <TextField label="Title" fullWidth value={title} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} required />
           <TextField label="Description" multiline rows={6} fullWidth value={description} onChange={(e) => setDescription(e.target.value)} sx={{ mb: 2 }} required />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
@@ -400,7 +420,7 @@ export default function SellerCreateAdFormTwoStep() {
       )}
 
       {step === 2 && (
-        <form onSubmit={handleImagesSubmit}>
+        <form onSubmit={async (e) => { e.preventDefault(); try { await uploadImagesToAd(); } catch {} }}>
           <Box sx={{ mb: 2 }}>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>Header image (single)</Typography>
             <label htmlFor="header-image-input">
@@ -520,7 +540,7 @@ export default function SellerCreateAdFormTwoStep() {
         </DialogActions>
       </Dialog>
 
-      {/* Verifying dialog */}
+      {/* Verifying dialog: shown after Paystack success until server confirms */}
       <Dialog open={verifyingPayment} onClose={() => {}} PaperProps={{ sx: { p: 2, width: 380 } }}>
         <DialogTitle>Verifying payment</DialogTitle>
         <DialogContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 2 }}>
@@ -532,20 +552,15 @@ export default function SellerCreateAdFormTwoStep() {
         </DialogContent>
       </Dialog>
 
-      {/* Success modal */}
+      {/* Success modal shown after server confirms (active or awaiting admin) */}
       <Dialog open={successModalOpen} onClose={() => handleSuccessClose(false)}>
-        <DialogTitle>{successIsActive ? "Payment received" : "Payment received — awaiting approval"}</DialogTitle>
+        <DialogTitle>Payment received</DialogTitle>
         <DialogContent>
           <Typography>{successMessage}</Typography>
-          {!successIsActive && (
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-              Our team will review your ad. You will get an email when it is approved.
-            </Typography>
-          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleSuccessClose(false)}>{successIsActive ? "Back to dashboard" : "OK"}</Button>
-          {successIsActive && <Button variant="contained" onClick={() => handleSuccessClose(true)}>View ad</Button>}
+          <Button onClick={() => handleSuccessClose(false)}>Back to dashboard</Button>
+          <Button variant="contained" onClick={() => handleSuccessClose(true)}>View ad</Button>
         </DialogActions>
       </Dialog>
     </Box>
