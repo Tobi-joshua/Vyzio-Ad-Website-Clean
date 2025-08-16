@@ -1,4 +1,4 @@
-import React, { useState, useContext, useEffect } from "react";
+import React, { useState, useContext, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Box, Typography, TextField, Button, CircularProgress,
@@ -8,10 +8,10 @@ import {
 } from "@mui/material";
 import AddPhotoIcon from "@mui/icons-material/AddPhotoAlternate";
 import DeleteIcon from "@mui/icons-material/Delete";
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_BASE_URL } from "../../constants";
 import { SellerDashboardContext } from "./index";
 import { useWebToast } from '../../hooks/useWebToast';
-import { usePaystackPayment } from "react-paystack";
 
 // helpers
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -24,12 +24,30 @@ const isAllowedSize = (file) => {
 };
 
 const CURRENCY_OPTIONS = ["USD", "NGN", "CAD", "GBP", "EUR", "XEN"];
+const PAYMENT_METHODS = [
+  { value: 'stripe', label: 'Stripe' },
+  { value: 'orange', label: 'Orange Pay' },
+  { value: 'crypto', label: 'Crypto' },
+];
 
-export default function SellerCreateAdFormTwoStep() {
-  const { id: categoryId, name: catName } = useParams();
+export default function SellerEditAdFormTwoStep() {
+  const { id, name: catName } = useParams();
   const navigate = useNavigate();
   const showToast = useWebToast();
   const { userId, token, firstName, email } = useContext(SellerDashboardContext || {});
+
+  // header helpers
+  const getAuthHeaders = useCallback(() => {
+    const h = {};
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
+  }, [token]);
+
+  const getJsonHeaders = useCallback(() => {
+    const h = { "Content-Type": "application/json" };
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
+  }, [token]);
 
   // metadata
   const [title, setTitle] = useState("");
@@ -38,36 +56,86 @@ export default function SellerCreateAdFormTwoStep() {
   const [price, setPrice] = useState("");
   const [currency, setCurrency] = useState("NGN");
 
-  // images
+  // images: newly selected files
   const [headerImageFile, setHeaderImageFile] = useState(null);
-  const [extraImages, setExtraImages] = useState([]);
+  const [headerPreview, setHeaderPreview] = useState(null); // object url for local preview
+  const [extraImages, setExtraImages] = useState([]); // File[] for newly added extras
+  const [extraPreviews, setExtraPreviews] = useState([]); // object urls
+
+  // existing images from backend
+  const [existingHeader, setExistingHeader] = useState(null); // { url }
+  const [existingImages, setExistingImages] = useState([]); // [{ id, url, filename }]
 
   const [step, setStep] = useState(1); // 1 metadata, 2 images, 3 publish
 
   // network / state flags
-  const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [adData, setAdData] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   // payment
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
-  const [creatingPayment, setCreatingPayment] = useState(false); // spinner for Pay & Publish / Launch Checkout
+  const [creatingPayment, setCreatingPayment] = useState(false);
   const [paymentDetails, setPaymentDetails] = useState(null);
   const [paymentAdId, setPaymentAdId] = useState(null);
+  const [paymentMethod, setPaymentMethod] = useState('stripe');
+  const [manualReference, setManualReference] = useState('');
 
   // verifying & success UI
   const [verifyingPayment, setVerifyingPayment] = useState(false);
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [successIsActive, setSuccessIsActive] = useState(false);
 
-  
-  const getAuthHeaders = () => {
-    const h = {};
-    if (token) h["Authorization"] = `Bearer ${token}`;
-    return h;
-  };
+  // fetch ad and populate form
+  useEffect(() => {
+    let mounted = true;
+    const fetchAd = async () => {
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/`, {
+          headers: getJsonHeaders(),
+          credentials: "include",
+        });
+        if (!r.ok) throw new Error("Failed to fetch ad");
+        const data = await r.json();
+        if (!mounted) return;
+        setAdData(data);
 
+        // populate form
+        setTitle(data.title || "");
+        setDescription(data.description || "");
+        setCity(data.city || "");
+        setPrice(data.price ?? "");
+        setCurrency(data.currency || "NGN");
+
+        // existing header
+        if (data.header_image) setExistingHeader({ url: data.header_image });
+        else setExistingHeader(null);
+
+        // existing extras (assumes serializer returns images array with { id, image, filename }
+        const existing = (data.images || []).map(img => ({ id: img.id, url: img.image, filename: img.filename || img.image }));
+        setExistingImages(existing);
+
+        setLoading(false);
+      } catch (err) {
+        console.error(err);
+        setError(err.message || "Failed to load ad");
+        setLoading(false);
+      }
+    };
+    fetchAd();
+    return () => { mounted = false; };
+  }, [id, getJsonHeaders]);
+
+  // cleanup object URLs when headerFile or extraImages change
+  useEffect(() => {
+    return () => {
+      if (headerPreview) URL.revokeObjectURL(headerPreview);
+      extraPreviews.forEach(u => URL.revokeObjectURL(u));
+    };
+  }, [headerPreview, extraPreviews]);
 
   // file handlers
   const handleHeaderImageChange = (e) => {
@@ -77,77 +145,100 @@ export default function SellerCreateAdFormTwoStep() {
       showToast({ message: "Header image too large or not supported (max 10MB)", severity: "error" });
       return;
     }
+    // revoke previous preview
+    if (headerPreview) URL.revokeObjectURL(headerPreview);
+    const url = URL.createObjectURL(f);
     setHeaderImageFile(f);
+    setHeaderPreview(url);
+    // clear existing header since user intends to replace it
+    setExistingHeader(null);
   };
 
   const handleExtraImagesChange = (e) => {
     const files = Array.from(e.target.files || []);
     const allowed = [];
+    const newPreviews = [];
     for (const f of files) {
       if (!isAllowedSize(f)) {
         showToast({ message: `${f.name} is too large or not supported`, severity: "error" });
         continue;
       }
       allowed.push(f);
+      newPreviews.push(URL.createObjectURL(f));
     }
-    if (allowed.length) setExtraImages((prev) => [...prev, ...allowed]);
+    if (allowed.length) {
+      setExtraImages((prev) => [...prev, ...allowed]);
+      setExtraPreviews((prev) => [...prev, ...newPreviews]);
+    }
   };
 
-  const removeExtraImage = (index) => setExtraImages((prev) => prev.filter((_, i) => i !== index));
+  const removeExtraImage = (index) => {
+    // if index refers to newly added file
+    setExtraImages(prev => {
+      const copy = [...prev];
+      copy.splice(index, 1);
+      return copy;
+    });
+    // remove preview accordingly
+    setExtraPreviews(prev => {
+      const copy = [...prev];
+      const u = copy.splice(index, 1);
+      if (u && u[0]) URL.revokeObjectURL(u[0]);
+      return copy;
+    });
+  };
+
   const clearForm = () => {
-    setTitle(""); setDescription(""); setCity(""); setPrice(""); setHeaderImageFile(null); setExtraImages([]); setAdData(null); setStep(1);
+    setTitle(""); setDescription(""); setCity(""); setPrice("");
+    if (headerPreview) { URL.revokeObjectURL(headerPreview); setHeaderPreview(null); }
+    extraPreviews.forEach(u => URL.revokeObjectURL(u));
+    setHeaderImageFile(null); setExtraImages([]); setExtraPreviews([]);
+    setAdData(null); setStep(1);
   };
 
-  // -------- metadata creation --------
-  const createAdMetadata = async () => {
-    setError(""); setCreating(true);
+  // -------- metadata update (PATCH) --------
+  const saveMetadata = async () => {
+    setError(""); setSaving(true);
     try {
-      const payload = {
-        title, description, city,
-        price: price || "0",
-        currency: currency || "NGN",
-      };
-      if (categoryId) payload.category = categoryId;
-
-      const res = await fetch(`${API_BASE_URL}/api/seller/ads/create-metadata/`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getAuthHeaders(),
-        },
+      const payload = { title, description, city, price: price || "0", currency };
+      const res = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/`, {
+        method: "PATCH",
+        headers: getJsonHeaders(),
         credentials: "include",
         body: JSON.stringify(payload),
       });
-
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || err.error || "Failed creating ad metadata");
+        throw new Error(err.detail || err.error || "Failed updating ad metadata");
       }
       const data = await res.json();
-      setAdData(data);
+      // our views return { ad: ... } or plain ad — handle both
+      const ad = data.ad || data;
+      setAdData(ad);
+      showToast({ message: "Ad updated — proceed to images", severity: "success" });
       setStep(2);
-      showToast({ message: "Ad metadata created — proceed to upload images", severity: "success" });
-      return data;
+      return ad;
     } catch (err) {
-      setError(err.message || "Unknown error creating ad");
+      setError(err.message || "Unknown error updating ad");
       throw err;
     } finally {
-      setCreating(false);
+      setSaving(false);
     }
   };
 
-  // -------- upload images --------
+  // -------- upload images (existing separate endpoint) --------
   const uploadImagesToAd = async (adIdArg) => {
-    if (!adIdArg && !adData?.id) throw new Error("No ad ID for image upload");
+    const adId = adIdArg || adData?.id || id;
+    if (!adId) throw new Error("No ad ID for image upload");
     setUploading(true);
     try {
       const fd = new FormData();
       if (headerImageFile) fd.append("header_image", headerImageFile);
       extraImages.forEach((img) => fd.append("images", img));
 
-      const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adIdArg || adData.id}/upload-images/`, {
+      const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/upload-images/`, {
         method: "POST",
-        headers: { ...getAuthHeaders() }, // don't set Content-Type (browser will set multipart boundary)
+        headers: getAuthHeaders(), // IMPORTANT: do NOT set Content-Type here
         body: fd,
         credentials: "include",
       });
@@ -158,6 +249,25 @@ export default function SellerCreateAdFormTwoStep() {
       }
       const json = await res.json();
       showToast({ message: "Images uploaded", severity: "success" });
+
+      // refresh ad detail so existingImages/header reflect new uploads
+      const r2 = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/`, {
+        headers: getJsonHeaders(),
+        credentials: "include",
+      });
+      if (r2.ok) {
+        const fresh = await r2.json();
+        setAdData(fresh);
+        setExistingHeader(fresh.header_image ? { url: fresh.header_image } : null);
+        const existing = (fresh.images || []).map(img => ({ id: img.id, url: img.image, filename: img.filename || img.image }));
+        setExistingImages(existing);
+      }
+
+      // cleanup newly uploaded local files + previews
+      if (headerPreview) { URL.revokeObjectURL(headerPreview); setHeaderPreview(null); }
+      extraPreviews.forEach(u => URL.revokeObjectURL(u));
+      setHeaderImageFile(null); setExtraImages([]); setExtraPreviews([]);
+
       setStep(3);
       return json;
     } catch (err) {
@@ -168,21 +278,53 @@ export default function SellerCreateAdFormTwoStep() {
     }
   };
 
+  // -------- delete existing extra image --------
+  const deleteExistingImage = async (imgId) => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/seller/ads/images/${imgId}/`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+        credentials: "include",
+      });
+      if (!r.ok) throw new Error("Failed to delete image");
+      setExistingImages(prev => prev.filter(x => x.id !== imgId));
+      showToast({ message: "Image deleted", severity: "success" });
+    } catch (err) {
+      console.error(err);
+      showToast({ message: err.message || "Failed to delete image", severity: "error" });
+    }
+  };
+
+  // -------- delete existing header --------
+  const deleteExistingHeader = async () => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/header/`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+        credentials: "include",
+      });
+      if (!r.ok) throw new Error("Failed to delete header");
+      setExistingHeader(null);
+      showToast({ message: "Header removed", severity: "success" });
+    } catch (err) {
+      console.error(err);
+      showToast({ message: err.message || "Failed to remove header", severity: "error" });
+    }
+  };
+
   // -------- create payment instance (server) --------
-  const createPaymentInstance = async (adIdArg) => {
-    const adId = adIdArg || adData?.id;
+  const createPaymentInstance = async (adIdArg, methodArg) => {
+    const adId = adIdArg || adData?.id || id;
+    const method = methodArg || 'stripe';
     if (!adId) throw new Error("No ad ID for payment");
     setCreatingPayment(true);
     setPaymentAdId(adId);
     try {
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/create-payment/`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getAuthHeaders(),
-        },
+        headers: getJsonHeaders(),
         credentials: "include",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ method }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -191,12 +333,10 @@ export default function SellerCreateAdFormTwoStep() {
       const json = await res.json();
       setPaymentDetails(json);
       setPaymentDialogOpen(true);
-      // optimistic: ad pending so user can click Pay immediately
+      // optimistic: mark pending locally
       setAdData(prev => prev ? { ...prev, status: "pending" } : prev);
       return json;
     } finally {
-      // keep creatingPayment true briefly so UI shows spinner; caller will clear it when launching checkout
-      // but reset it here only if an error occurred (we can't detect easily), so ensure callers set it appropriately
       setCreatingPayment(false);
     }
   };
@@ -205,10 +345,7 @@ export default function SellerCreateAdFormTwoStep() {
   const confirmPaymentOnServer = async ({ payment_reference, ad_id }) => {
     const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...getAuthHeaders(),
-      },
+      headers: getJsonHeaders(),
       credentials: "include",
       body: JSON.stringify({ payment_reference, ad_id }),
     });
@@ -219,135 +356,87 @@ export default function SellerCreateAdFormTwoStep() {
     return res.json();
   };
 
-  // -------- verify after Paystack success (async) --------
-  async function confirmPaymentAndRedirect(response, adId) {
+  async function handleManualConfirm(reference) {
+    const adId = paymentAdId || adData?.id || id;
     if (!adId) {
       showToast({ message: "Missing ad id for verification", severity: "error" });
-      setVerifyingPayment(false);
-      setCreatingPayment(false);
       return;
     }
-
     setVerifyingPayment(true);
     try {
-      const payload = { payment_reference: response.reference, ad_id: adId };
-      const serverResp = await confirmPaymentOnServer(payload);
-
-      // if server returns updated ad object / status, update local adData
+      const serverResp = await confirmPaymentOnServer({ payment_reference: reference, ad_id: adId });
       if (serverResp?.ad) {
         setAdData(prev => ({ ...(prev || {}), ...(serverResp.ad || {}) }));
       }
-
       setVerifyingPayment(false);
-      setCreatingPayment(false);
       setPaymentDialogOpen(false);
       setPaymentDetails(null);
       setPaymentAdId(null);
 
-      // show appropriate success message
       if ((serverResp.status ?? serverResp.ad?.status) === "active") {
+        setSuccessIsActive(true);
         setSuccessMessage(serverResp.detail || "Payment confirmed — your ad is active.");
       } else {
+        setSuccessIsActive(false);
         setSuccessMessage(serverResp.detail || "Payment received. Your ad is awaiting admin approval. You will be notified by email when approved.");
       }
       setSuccessModalOpen(true);
     } catch (err) {
       console.error("Payment confirmation error:", err);
       setVerifyingPayment(false);
-      setCreatingPayment(false);
       setPaymentDetails(null);
       setPaymentAdId(null);
       showToast({ message: err.message || "Failed to confirm payment", severity: "error" });
     }
   }
 
-  // Paystack config (use hook with latest paymentDetails)
-  const paystackConfig = paymentDetails ? {
-    publicKey: paymentDetails.public_key || process.env.REACT_APP_PAYSTACK_PUBLIC_KEY || "",
-    email: email || localStorage.getItem("email") || "",
-    amount: paymentDetails.amount_smallest_unit || Math.round((Number(paymentDetails.amount || 0) * 100) || 0),
-    currency: paymentDetails.currency || "NGN",
-    reference: paymentDetails.payment_reference,
-  } : {};
+  // Launch provider (open checkout URL if provided)
+  const launchProvider = () => {
+    if (!paymentDetails) return;
+    // server may provide a checkout_url for Stripe/Orange
+    if (paymentDetails.checkout_url) {
+      window.open(paymentDetails.checkout_url, '_blank');
+      showToast({ message: 'Payment provider opened in a new tab', severity: 'info' });
+      return;
+    }
 
-  const initializePayment = usePaystackPayment(paystackConfig);
+    // crypto flow: server may return crypto_address and amount
+    if (paymentDetails.crypto_address) {
+      showToast({ message: 'Follow the displayed crypto instructions to complete payment', severity: 'info' });
+      return;
+    }
 
-  // synchronous callbacks for Paystack (must NOT be async)
-  const onPaystackSuccess = (response) => {
-    // keep this function synchronous:
-    // - show verifying UI
-    setPaymentDialogOpen(false);
-    setPaymentDetails(null);
-    setVerifyingPayment(true);
-    // call async confirmation (do not await here)
-    confirmPaymentAndRedirect(response, paymentAdId || adData?.id);
-  };
-
-  const onPaystackClose = () => {
-    // synchronous cleanup
-    setCreatingPayment(false);
-    setPaymentDialogOpen(false);
-    setPaymentDetails(null);
-    setPaymentAdId(null);
-    showToast({ message: "Payment window closed — you can complete payment later.", severity: "info" });
+    showToast({ message: 'No external URL provided — complete payment with your provider and paste the reference to verify', severity: 'info' });
   };
 
   // UI handlers
   const handleMetadataSubmit = async (e) => {
     e?.preventDefault?.();
-    try {
-      await createAdMetadata();
-    } catch (err) {
-      // error already handled in createAdMetadata
-    }
+    try { await saveMetadata(); } catch {};
   };
 
   const handleImagesSubmit = async (e) => {
     e?.preventDefault?.();
-    try {
-      await uploadImagesToAd();
-    } catch (err) {
-      // handled in uploadImagesToAd
-    }
+    try { await uploadImagesToAd(adData?.id || id); } catch {};
   };
 
-  // when user clicks "Pay & Publish" in step 3
   const handlePayNow = async () => {
-    if (!adData?.id) {
-      showToast({ message: "No ad to pay for", severity: "error" });
-      return;
-    }
-    // if we already have paymentDetails, skip create step and open checkout
+    const adId = adData?.id || id;
+    if (!adId) { showToast({ message: "No ad to pay for", severity: "error" }); return; }
+
+    // If payment already created and has a payment_reference, just re-open the dialog
     if (paymentDetails && paymentDetails.payment_reference) {
-      // directly launch checkout
-      launchCheckout();
+      setPaymentDialogOpen(true);
       return;
     }
 
-    // create payment instance then wait for paymentDetails and open dialog
     try {
-      setCreatingPayment(true); // spinner on Pay button
-      await createPaymentInstance(adData.id);
-      // leave creatingPayment true until user clicks Launch Checkout (we want visual cue)
-      // Note: createPaymentInstance sets paymentDialogOpen(true), showing fee & Launch button.
+      setCreatingPayment(true);
+      await createPaymentInstance(adId, paymentMethod);
     } catch (err) {
       showToast({ message: err.message || "Payment initialization failed", severity: "error" });
+    } finally {
       setCreatingPayment(false);
-    }
-  };
-
-  // Launch Checkout from dialog
-  const launchCheckout = () => {
-    if (!paymentDetails) return;
-    setCreatingPayment(true);
-    try {
-      // initializePayment expects callbacks as positional args
-       initializePayment({onSuccess:onPaystackSuccess, onClose:onPaystackClose});
-      // initialization opens paystack; we keep creatingPayment until either onPaystackSuccess/Close runs
-    } catch (err) {
-      console.error("Could not initialize paystack:", err);
-      setCreatingPayment(false);
-      showToast({ message: "Could not initialize payment, try again later", severity: "error" });
     }
   };
 
@@ -358,24 +447,33 @@ export default function SellerCreateAdFormTwoStep() {
     navigate("/sellers/dashboard");
   };
 
-  // success modal close
   const handleSuccessClose = (viewAd = false) => {
     setSuccessModalOpen(false);
-    if (viewAd && adData?.id) {
-      navigate(`/sellers/ads/${adData.id}/details`);
-    } else {
-      // refresh / redirect to dashboard
-      navigate("/sellers/dashboard");
+    if (viewAd && adData?.id) navigate(`/sellers/ads/${adData.id}/details`);
+    else navigate("/sellers/dashboard");
+  };
+
+  const copyToClipboard = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast({ message: 'Copied to clipboard', severity: 'success' });
+    } catch (err) {
+      showToast({ message: 'Could not copy', severity: 'error' });
     }
   };
 
-  // ---------- Render ----------
   const accent = "#6C5CE7";
+
+  if (loading) return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+      <CircularProgress />
+    </Box>
+  );
 
   return (
     <Box maxWidth={980} mx="auto" my={4} p={3}
       sx={{ bgcolor: "background.paper", boxShadow: 3, borderRadius: 2, borderLeft: `6px solid ${accent}` }}>
-      <Typography variant="h5" mb={2} color="text.primary">Create ad {catName ? `in ${decodeURIComponent(catName)}` : ""}</Typography>
+      <Typography variant="h5" mb={2} color="text.primary">Edit ad {catName ? `in ${decodeURIComponent(catName)}` : ""}</Typography>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
@@ -386,7 +484,7 @@ export default function SellerCreateAdFormTwoStep() {
       </Stack>
 
       {step === 1 && (
-        <form onSubmit={async (e) => { e.preventDefault(); try { await createAdMetadata(); } catch {} }}>
+        <form onSubmit={handleMetadataSubmit}>
           <TextField label="Title" fullWidth value={title} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} required />
           <TextField label="Description" multiline rows={6} fullWidth value={description} onChange={(e) => setDescription(e.target.value)} sx={{ mb: 2 }} required />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
@@ -406,21 +504,21 @@ export default function SellerCreateAdFormTwoStep() {
           </FormControl>
 
           <Stack direction="row" spacing={2} justifyContent="flex-end">
-            <Button variant="outlined" onClick={() => navigate(-1)} disabled={creating}>Cancel</Button>
+            <Button variant="outlined" onClick={() => navigate(-1)} disabled={saving}>Cancel</Button>
             <Button
               variant="contained"
-              disabled={creating}
+              disabled={saving}
               sx={{ bgcolor: accent }}
-              onClick={async (e) => { e.preventDefault(); try { await createAdMetadata(); } catch {} }}
+              onClick={async (e) => { e.preventDefault(); try { await saveMetadata(); } catch {} }}
             >
-              {creating ? <CircularProgress size={20} color="inherit" /> : "Save & Next"}
+              {saving ? <CircularProgress size={20} color="inherit" /> : "Save & Next"}
             </Button>
           </Stack>
         </form>
       )}
 
       {step === 2 && (
-        <form onSubmit={async (e) => { e.preventDefault(); try { await uploadImagesToAd(); } catch {} }}>
+        <form onSubmit={handleImagesSubmit}>
           <Box sx={{ mb: 2 }}>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>Header image (single)</Typography>
             <label htmlFor="header-image-input">
@@ -428,15 +526,24 @@ export default function SellerCreateAdFormTwoStep() {
               <Button component="span" variant="outlined" startIcon={<AddPhotoIcon />}>Choose header image</Button>
             </label>
 
-            {headerImageFile && (
+            {/* existing header */}
+            {existingHeader ? (
               <Stack direction="row" spacing={1} alignItems="center" mt={1}>
-                <Avatar variant="rounded" src={URL.createObjectURL(headerImageFile)} sx={{ width: 72, height: 72 }} />
+                <Avatar variant="rounded" src={existingHeader.url} sx={{ width: 72, height: 72 }} />
                 <Box>
-                  <Typography variant="body2">{headerImageFile.name}</Typography>
-                  <Typography variant="caption" color="text.secondary">{(headerImageFile.size/1024/1024).toFixed(2)} MB</Typography>
+                  <Typography variant="body2">Current header</Typography>
+                  <Button size="small" onClick={deleteExistingHeader}>Remove</Button>
                 </Box>
               </Stack>
-            )}
+            ) : headerPreview ? (
+              <Stack direction="row" spacing={1} alignItems="center" mt={1}>
+                <Avatar variant="rounded" src={headerPreview} sx={{ width: 72, height: 72 }} />
+                <Box>
+                  <Typography variant="body2">New header</Typography>
+                  <Typography variant="caption" color="text.secondary">{headerImageFile?.name}</Typography>
+                </Box>
+              </Stack>
+            ) : null}
           </Box>
 
           <Box sx={{ mb: 2 }}>
@@ -447,17 +554,34 @@ export default function SellerCreateAdFormTwoStep() {
             </label>
 
             <Grid container spacing={1} sx={{ mt: 1 }}>
-              {extraImages.map((img, idx) => (
-                <Grid item key={idx}>
+              {/* existing images from backend */}
+              {existingImages.map((img) => (
+                <Grid item key={img.id}>
                   <Box sx={{ position: "relative", width: 96 }}>
-                    <Avatar variant="rounded" src={URL.createObjectURL(img)} sx={{ width: 96, height: 72 }} />
+                    <Avatar variant="rounded" src={img.url} sx={{ width: 96, height: 72 }} />
+                    <IconButton
+                      size="small"
+                      onClick={() => deleteExistingImage(img.id)}
+                      sx={{ position: "absolute", top: -10, right: -10, bgcolor: "background.paper" }}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                    <Typography variant="caption" display="block" noWrap sx={{ width: 96 }}>{img.filename}</Typography>
+                  </Box>
+                </Grid>
+              ))}
+
+              {/* newly selected files */}
+              {extraPreviews.map((u, idx) => (
+                <Grid item key={`new-${idx}`}>
+                  <Box sx={{ position: "relative", width: 96 }}>
+                    <Avatar variant="rounded" src={u} sx={{ width: 96, height: 72 }} />
                     <IconButton
                       size="small"
                       onClick={() => removeExtraImage(idx)}
                       sx={{ position: "absolute", top: -10, right: -10, bgcolor: "background.paper" }}>
                       <DeleteIcon fontSize="small" />
                     </IconButton>
-                    <Typography variant="caption" display="block" noWrap sx={{ width: 96 }}>{img.name}</Typography>
+                    <Typography variant="caption" display="block" noWrap sx={{ width: 96 }}>{extraImages[idx]?.name}</Typography>
                   </Box>
                 </Grid>
               ))}
@@ -473,7 +597,7 @@ export default function SellerCreateAdFormTwoStep() {
                 variant="contained"
                 disabled={uploading}
                 sx={{ ml: 1, bgcolor: accent }}
-                onClick={async () => { try { await uploadImagesToAd(); } catch {} }}
+                onClick={async () => { try { await uploadImagesToAd(adData?.id || id); } catch {} }}
               >
                 {uploading ? <CircularProgress size={18} color="inherit" /> : "Upload & Continue"}
               </Button>
@@ -484,7 +608,7 @@ export default function SellerCreateAdFormTwoStep() {
 
       {step === 3 && (
         <Box>
-          <Alert severity="success">Ad created. Ready to publish.</Alert>
+          <Alert severity="success">Ad ready to publish.</Alert>
           <Box sx={{ mt: 2 }}>
             <Typography variant="subtitle1">{adData?.title}</Typography>
             <Typography variant="body2" color="text.secondary">{currency} {adData?.price ?? price}</Typography>
@@ -514,12 +638,66 @@ export default function SellerCreateAdFormTwoStep() {
           <Typography variant="body2" sx={{ mb: 1 }}>
             Your ad is currently <strong>pending</strong>. Pay the listing fee to activate it.
           </Typography>
-          <Typography variant="body2">Ad title: {adData?.title}</Typography>
-          <Typography variant="body2">Advertised price: {currency} {adData?.price ?? price}</Typography>
-          <Box mt={1}>
+
+          <FormControl fullWidth sx={{ my: 1 }}>
+            <InputLabel id="payment-method-label">Payment method</InputLabel>
+            <Select
+              labelId="payment-method-label"
+              value={paymentMethod}
+              label="Payment method"
+              onChange={(e) => setPaymentMethod(e.target.value)}
+            >
+              {PAYMENT_METHODS.map(m => <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>)}
+            </Select>
+          </FormControl>
+
+          <Box sx={{ mt: 1 }}>
+            <Typography variant="body2">Ad title: {adData?.title}</Typography>
+            <Typography variant="body2">Advertised price: {currency} {adData?.price ?? price}</Typography>
+          </Box>
+
+          <Box mt={2}>
             <Typography variant="body2">Listing fee:</Typography>
             {paymentDetails ? (
-              <Typography variant="h6">{paymentDetails.currency} {paymentDetails.amount}</Typography>
+              <Box>
+                <Typography variant="h6">{paymentDetails.currency} {paymentDetails.amount}</Typography>
+
+                {/* If server gave a checkout URL (Stripe/Orange), show launch button */}
+                {paymentDetails.checkout_url && (
+                  <Button sx={{ mt: 1 }} variant="contained" onClick={launchProvider}>Open payment provider</Button>
+                )}
+
+                {/* If crypto info provided show address and copy button */}
+                {paymentDetails.crypto_address && (
+                  <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Typography variant="body2">Address: {paymentDetails.crypto_address}</Typography>
+                    <IconButton size="small" onClick={() => copyToClipboard(paymentDetails.crypto_address)}><ContentCopyIcon fontSize="small" /></IconButton>
+                  </Box>
+                )}
+
+                {/* If server returned a payment reference, show it and allow manual confirmation */}
+                {paymentDetails.payment_reference ? (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2">Reference: {paymentDetails.payment_reference}</Typography>
+                    <Button sx={{ mt: 1 }} variant="outlined" onClick={() => handleManualConfirm(paymentDetails.payment_reference)}>I have paid — Verify</Button>
+                  </Box>
+                ) : (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="caption" color="text.secondary">If your provider returns a reference after payment, paste it here to verify.</Typography>
+                    <TextField
+                      placeholder="Enter payment reference"
+                      fullWidth
+                      value={manualReference}
+                      onChange={(e) => setManualReference(e.target.value)}
+                      sx={{ mt: 1 }}
+                    />
+                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                      <Button variant="contained" onClick={() => launchProvider()}>Open provider</Button>
+                      <Button variant="outlined" onClick={() => handleManualConfirm(manualReference)} disabled={!manualReference}>Verify</Button>
+                    </Stack>
+                  </Box>
+                )}
+              </Box>
             ) : (
               <>
                 <Typography variant="body2">Loading fee…</Typography>
@@ -532,35 +710,40 @@ export default function SellerCreateAdFormTwoStep() {
           <Button onClick={CloseDialogAndNavigate}>Pay later</Button>
           <Button
             variant="contained"
-            onClick={launchCheckout}
-            disabled={!paymentDetails || creatingPayment}
+            onClick={() => { setCreatingPayment(true); createPaymentInstance(paymentAdId || adData?.id || id, paymentMethod).finally(() => setCreatingPayment(false)); }}
+            disabled={creatingPayment}
           >
-            {creatingPayment ? <CircularProgress size={18} color="inherit" /> : "Launch Checkout"}
+            {creatingPayment ? <CircularProgress size={18} color="inherit" /> : "Init payment"}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Verifying dialog: shown after Paystack success until server confirms */}
+      {/* Verifying dialog */}
       <Dialog open={verifyingPayment} onClose={() => {}} PaperProps={{ sx: { p: 2, width: 380 } }}>
         <DialogTitle>Verifying payment</DialogTitle>
         <DialogContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 2 }}>
           <CircularProgress />
           <Box>
-            <Typography>We received payment from the gateway and are verifying it with the server. This may take a few seconds.</Typography>
+            <Typography>We received payment from the provider and are verifying it with the server. This may take a few seconds.</Typography>
             <Typography variant="caption" color="text.secondary">Do not close this window.</Typography>
           </Box>
         </DialogContent>
       </Dialog>
 
-      {/* Success modal shown after server confirms (active or awaiting admin) */}
+      {/* Success modal */}
       <Dialog open={successModalOpen} onClose={() => handleSuccessClose(false)}>
-        <DialogTitle>Payment received</DialogTitle>
+        <DialogTitle>{successIsActive ? "Payment received" : "Payment received — awaiting approval"}</DialogTitle>
         <DialogContent>
           <Typography>{successMessage}</Typography>
+          {!successIsActive && (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+              Our team will review your ad. You will get an email when it is approved.
+            </Typography>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => handleSuccessClose(false)}>Back to dashboard</Button>
-          <Button variant="contained" onClick={() => handleSuccessClose(true)}>View ad</Button>
+          <Button onClick={() => handleSuccessClose(false)}>{successIsActive ? "Back to dashboard" : "OK"}</Button>
+          {successIsActive && <Button variant="contained" onClick={() => handleSuccessClose(true)}>View ad</Button>}
         </DialogActions>
       </Dialog>
     </Box>

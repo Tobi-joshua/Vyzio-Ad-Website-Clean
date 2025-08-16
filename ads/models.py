@@ -261,20 +261,26 @@ class Payment(models.Model):
         ('card', 'Card'),
         ('mobile_money', 'Mobile Money'),
         ('crypto', 'Cryptocurrency'),
+        ("stripe", "Stripe"),
+        ("orange", "OrangePay"),
     ]
 
     STATUS_CHOICES = [
+        ("initiated", "Initiated"),
         ('pending', 'Pending'),
         ('confirmed', 'Confirmed'),
         ('failed', 'Failed'),
+        ("cancelled", "Cancelled"),
     ]
 
     user = models.ForeignKey('User', on_delete=models.CASCADE)
     ad = models.ForeignKey(Ad, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=20, choices=PAYMENT_METHODS)
+    checkout_url = models.URLField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     crypto_currency = models.CharField(max_length=20, blank=True, null=True)
+    provider_payload = models.JSONField(null=True, blank=True)
     currency = models.CharField(max_length=3, default='USD')  
     crypto_address = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

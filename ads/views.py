@@ -11,8 +11,9 @@ import secrets
 import string
 import base64
 import logging
+import stripe
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
 import requests
 from django.utils.timezone import now
@@ -1227,9 +1228,6 @@ def buyer_account_settings(request):
 
 
 
-
-
-
 """ Sellers Homepage """
 
 @api_view(['GET'])
@@ -1390,8 +1388,6 @@ def ads_create(request):
 
 
 
-
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def ads_create_metadata(request):
@@ -1450,20 +1446,20 @@ def seller_ad_detail(request, pk):
     return Response(serializer.data)
 
 
-
-
 def generate_payment_reference():
     import uuid
     return f"VYZIO-PAY-{uuid.uuid4().hex[:12].upper()}"
-
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_ad_payment(request, pk):
     """
-    Create a Payment instance for the given ad. Uses ListingPrice set by admin
-    for the seller's currency (user.preferred_currency or ad.currency fallback).
+    Create a Payment instance for the given ad.
+    Uses ListingPrice set by admin for the seller's currency (user.preferred_currency
+    or ad.currency fallback). This endpoint only creates the Payment record;
+    provider integrations (Stripe, Orange, Crypto) should be handled in
+    confirm endpoints.
     """
     user = request.user
     try:
@@ -1474,90 +1470,193 @@ def create_ad_payment(request, pk):
     if ad.status == "active":
         return Response({"detail": "Ad already active."}, status=status.HTTP_400_BAD_REQUEST)
 
-    currency = None
-    if getattr(user, "preferred_currency", None):
-        currency = user.preferred_currency.upper()
-    else:
-        currency = (ad.currency or "USD").upper()
+    # determine currency preference: user -> ad -> default
+    currency = (getattr(user, "preferred_currency", None) or ad.currency or "").upper() or None
 
-    # Look up admin-configured listing fee for this currency
-    listing_fee = None
-    lp = ListingPrice.objects.filter(currency__iexact=currency, active=True).order_by("-is_default").first()
+    # Find ListingPrice for the currency; fallback to default active listing price
+    lp = None
+    if currency:
+        lp = ListingPrice.objects.filter(currency__iexact=currency, active=True).order_by("-is_default").first()
+    if not lp:
+        lp = ListingPrice.objects.filter(is_default=True, active=True).first()
+        if lp:
+            currency = (lp.currency or "USD").upper()
+
     if lp:
         listing_fee = lp.amount
     else:
-        default_lp = ListingPrice.objects.filter(is_default=True, active=True).first()
-        if default_lp:
-            listing_fee = default_lp.amount
-            currency = default_lp.currency.upper()
-        else:
-            listing_fee = Decimal("0.00")
+        listing_fee = Decimal("0.00")
 
-    amount = Decimal(listing_fee)
+    # ensure Decimal with 2 places
+    amount = Decimal(listing_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+    # generate unique reference
     payment_reference = generate_payment_reference()
 
-    method = request.data.get("method", "card")
+    # normalize incoming method
+    method = (request.data.get("method") or "").lower()
+    if method in ("card", "stripe"):
+        method_key = "stripe"
+    elif method in ("mobile_money", "orange", "orange_pay"):
+        method_key = "orange"
+    elif method in ("crypto", "coinbase", "crypto_currency"):
+        method_key = "crypto"
+    else:
+        method_key = "stripe"
 
-    payment = Payment.objects.create(
-        user=user,
-        ad=ad,
-        amount=amount,
-        method=method,
-        status="pending",
-        currency=currency,
-        payment_reference=payment_reference
-    )
+    with transaction.atomic():
+        payment = Payment.objects.create(
+            user=user,
+            ad=ad,
+            amount=amount,
+            method=method_key,
+            status="initiated",
+            currency=(currency or "USD"),
+            payment_reference=payment_reference,
+        )
 
-    # Mark ad as 'pending' (since created but not yet paid/published)
-    ad.status = "draft"
-    ad.save(update_fields=["status"])
+        # mark ad as pending payment
+        ad.status = "draft"
+        ad.save(update_fields=["status"])
 
-    # Provide gateway-ready numbers: e.g. amount in kobo/cents
-    amount_smallest_unit = int((amount * Decimal(100)).quantize(Decimal('1')))
-    paystack_public_key = PAYSTACK_PUBLIC_KEY
+    # prepare smallest unit (cents/kobo etc.)
+    amount_smallest_unit = int((amount * Decimal(100)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
 
-    return Response({
-        "payment_reference": payment_reference,
+    resp = {
         "payment_id": payment.id,
+        "payment_reference": payment_reference,
         "amount": str(amount),
         "amount_smallest_unit": amount_smallest_unit,
-        "currency": currency,
-        "public_key": paystack_public_key,
-    }, status=status.HTTP_201_CREATED)
+        "currency": payment.currency,
+        "method": method_key,
+        "status": payment.status,
+        "notice": "Payment record created. Confirm via provider-specific endpoint."
+    }
+    return Response(resp, status=status.HTTP_201_CREATED)
+
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def confirm_payment(request):
+def confirm_ad_payment(request):
+    """
+    Confirm a payment by verifying with the provider.
+    Expects { payment_reference, ad_id } in body.
+    """
     payment_reference = request.data.get("payment_reference")
     ad_id = request.data.get("ad_id")
 
     if not payment_reference or not ad_id:
         return Response({"detail": "payment_reference and ad_id required."}, status=status.HTTP_400_BAD_REQUEST)
-
     try:
-        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
+        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id)
     except Payment.DoesNotExist:
         return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    # Simple Paystack verification
-    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
-    verify_url = f"https://api.paystack.co/transaction/verify/{payment_reference}"
-    r = requests.get(verify_url, headers=headers, timeout=10)
-    data = r.json()
-    if data.get("data", {}).get("status") == "success":
-        payment.status = "confirmed"
-        payment.created_at = timezone.now()
-        payment.save()
+    # If already confirmed, return success
+    if payment.status == "confirmed":
         ad = payment.ad
-        return Response({
-            "detail": "Payment confirmed",
-            "status": ad.status,
-            "is_active": ad.is_active
-        })
+        return Response({"detail": "Already confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
 
-    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+    # Only the user who created the payment or staff should confirm via client – ensure ownership
+    if payment.user != request.user and not request.user.is_staff:
+        return Response({"detail": "Not authorized to confirm this payment"}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        method = (payment.method or "").lower()
+        if method == "stripe":
+            # payment_reference may be a checkout session id or a payment_intent id
+            stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", None)
+            if not stripe.api_key:
+                return Response({"detail": "Stripe not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # Try retrieving session first (if you stored session id)
+            try:
+                session = stripe.checkout.Session.retrieve(payment_reference)
+            except stripe.error.InvalidRequestError:
+                session = None
+            paid = False
+            provider_payload = None
+
+            if session:
+                provider_payload = session.to_dict()
+                # check payment_status or PaymentIntent status
+                payment_intent_id = session.get("payment_intent")
+                if payment_intent_id:
+                    intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+                    provider_payload["payment_intent"] = intent.to_dict()
+                    paid = intent.status in ("succeeded",)
+                else:
+                    paid = session.get("payment_status") == "paid"
+
+            else:
+                try:
+                    intent = stripe.PaymentIntent.retrieve(payment_reference)
+                    provider_payload = intent.to_dict()
+                    paid = intent.status in ("succeeded",)
+                except stripe.error.InvalidRequestError:
+                    paid = False
+
+            if paid:
+                with transaction.atomic():
+                    payment.status = "confirmed"
+                    payment.provider_payload = provider_payload
+                    payment.save(update_fields=["status", "provider_payload"])
+                    ad = payment.ad
+                    ad.status = "active"
+                    ad.save(update_fields=["status"])
+                return Response({"detail": "Payment confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
+            return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
+        elif method == "crypto":
+            # Coinbase Commerce verification using charge code stored in payment_reference
+            cb_key = getattr(settings, "COINBASE_COMMERCE_API_KEY", None)
+            if not cb_key:
+                return Response({"detail": "Crypto provider not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            headers = {"X-CC-Api-Key": cb_key, "X-CC-Version": "2018-03-22"}
+            resp = requests.get(f"https://api.commerce.coinbase.com/charges/{payment_reference}", headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            timeline = data.get("timeline", [])
+            paid = any(t.get("status", "").lower() in ("completed", "confirmed") for t in timeline)
+
+            if paid:
+                with transaction.atomic():
+                    payment.status = "confirmed"
+                    payment.provider_payload = data
+                    payment.save(update_fields=["status", "provider_payload"])
+                    ad = payment.ad
+                    ad.status = "active"
+                    ad.save(update_fields=["status"])
+                return Response({"detail": "Payment confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
+            return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
+        elif method == "orange":
+            ORANGE_API_KEY = getattr(settings, "ORANGE_API_KEY", None)
+            if not ORANGE_API_KEY:
+                return Response({"detail": "Orange not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            resp = requests.get(f"https://api.orange.com/transactions/{payment_reference}", headers={"Authorization": f"Bearer {ORANGE_API_KEY}"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") in ("SUCCESS", "COMPLETED", "PAID"):
+                with transaction.atomic():
+                    payment.status = "confirmed"
+                    payment.provider_payload = data
+                    payment.save(update_fields=["status", "provider_payload"])
+                    ad = payment.ad
+                return Response({"detail": "Payment confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
+            return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
+        else:
+            return Response({"detail": "Unsupported payment method"}, status=status.HTTP_400_BAD_REQUEST)
+
+    except requests.RequestException as e:
+        return Response({"detail": "Provider verification failed", "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+    except stripe.error.StripeError as e:
+        return Response({"detail": "Stripe error", "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+    except Exception as e:
+        return Response({"detail": "Verification error", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -1568,3 +1667,110 @@ def delete_seller_ad(request, ad_id):
     ad = get_object_or_404(Ad, id=ad_id, user=request.user)
     ad.delete()
     return Response({"detail": "Ad deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
+
+
+
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
+MAX_SIZE = 10 * 1024 * 1024
+
+def validate_file(f):
+    ext = f.name.rsplit(".", 1)[-1].lower() if "." in f.name else ""
+    if ext and ext not in ALLOWED_EXTENSIONS:
+        raise ValidationError(f"Unsupported file type: {f.name}")
+    if f.size > MAX_SIZE:
+        raise ValidationError(f"File too large: {f.name} (max 10MB)")
+
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def ads_edit_detail(request, pk):
+    """
+    GET: return ad detail for editing.
+    PUT/PATCH: update metadata (partial supported via PATCH).
+    DELETE: delete the ad (soft-delete or hard delete depending on your model).
+    """
+    ad = get_object_or_404(Ad, pk=pk, user=request.user)
+
+    if request.method == "GET":
+        out = AdDetailSerializer(ad, context={"request": request}).data
+        return Response(out)
+
+    if request.method in ("PUT", "PATCH"):
+        # Use AdUpdateSerializer or AdCreateSerializer depending on your setup
+        partial = (request.method == "PATCH")
+        serializer_class = AdCreateSerializer if "AdUpdateSerializer" in globals() else AdCreateSerializer
+        serializer = serializer_class(ad, data=request.data, partial=partial, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        # If we accept multipart (header image might be included), validate files
+        header = request.FILES.get("header_image")
+        images = request.FILES.getlist("images")
+        try:
+            if header:
+                validate_file(header)
+            for f in images:
+                validate_file(f)
+        except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                updated_ad = serializer.save()  # serializer.save() handles updating fields
+
+                # If user provided images/header in this request, handle them similarly to upload view
+                if header:
+                    updated_ad.header_image = header
+                    updated_ad.save(update_fields=["header_image"])
+
+                created_images = []
+                for f in images:
+                    ai = AdImage.objects.create(ad=updated_ad, image=f)
+                    created_images.append({"id": ai.id, "filename": getattr(ai.image, "name", "")})
+
+                # If the ad was active and you want editor changes to re-qualify it, optionally set to 'pending'
+                if updated_ad.status == "active":
+                    # business decision: mark as pending after edits
+                    updated_ad.status = "pending"
+                    updated_ad.save(update_fields=["status"])
+
+        except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        out = AdDetailSerializer(updated_ad, context={"request": request}).data
+        out_resp = {"detail": "Ad updated", "ad": out}
+        if created_images:
+            out_resp["uploaded"] = created_images
+        return Response(out_resp, status=status.HTTP_200_OK)
+
+    if request.method == "DELETE":
+        # Depending on your model: either delete or mark as removed.
+        # Here we perform a hard delete; change to soft-delete pattern if required.
+        ad.delete()
+        return Response({"detail": "Ad deleted"}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def ads_image_delete(request, pk):
+    """
+    Delete a single AdImage instance (extra image).
+    URL: /api/seller/ads/images/<pk>/
+    """
+    ai = get_object_or_404(AdImage, pk=pk, ad__user=request.user)
+    ai.delete()
+    return Response({"detail": "Image deleted"}, status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def ads_header_delete(request, pk):
+    """
+    Remove header image from an ad (set to null).
+    URL: /api/seller/ads/<pk>/header/
+    """
+    ad = get_object_or_404(Ad, pk=pk, user=request.user)
+    # if business rule: disallow header removal when active, you can check ad.status
+    ad.header_image.delete(save=False)  # delete file from storage but keep model field null
+    ad.header_image = None
+    ad.save(update_fields=["header_image"])
+    return Response({"detail": "Header image removed", "ad_id": ad.pk}, status=status.HTTP_200_OK)

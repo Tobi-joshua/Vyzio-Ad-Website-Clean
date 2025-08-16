@@ -73,12 +73,13 @@ urlpatterns = [
     path('seller/ads/create/', views.ads_create, name='seller-ads-create'),
     path("seller/ads/<int:pk>/", views.seller_ad_detail, name="seller-ad-detail"),
     path("seller/ads/<int:pk>/create-payment/", views.create_ad_payment, name="create-ad-payment"),
-    path("seller/payments/confirm/", views.confirm_payment, name="confirm-payment"),
+    path("seller/payments/confirm/", views.confirm_ad_payment, name="confirm-payment"),
     path("seller/ads/create-metadata/", views.ads_create_metadata, name="ads_create_metadata"),
     path("seller/ads/<int:pk>/upload-images/", views.ads_upload_images, name="ads_upload_images"),
     path("seller/delete/ads/<int:ad_id>/", views.delete_seller_ad, name="delete_seller_ad"),
-
-
+    path("seller/ads/<int:pk>/", views.ads_edit_detail, name="ads-detail"),
+    path("seller/ads/<int:pk>/header/", views.ads_header_delete, name="ads-header-delete"),
+    path("seller/ads/images/<int:pk>/", views.ads_image_delete, name="ads-image-delete"),
 
 
 ]
