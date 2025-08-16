@@ -265,3 +265,15 @@ IMAGEKIT_API = ImageKit(
     public_key=IMAGEKIT_PUBLIC_KEY,
     url_endpoint=IMAGEKIT_URL_ENDPOINT
 )
+
+
+# Stripe
+STRIPE_SECRET_KEY = "sk_test_51RwhU9Eg4d2kFkAHEhqgG63HK6LzgfeanvzETKgecv5IIpnuH9Ok5LrubnTKoAT7nvjxVqCPha8k4aNrnulWlF4Y00aL3On2yc"
+STRIPE_PUBLISHABLE_KEY = "pk_test_51RwhU9Eg4d2kFkAHvMoNUhVHAphA1hx9QIoGYQHYt11khLQ2Yrr8hqomQPMTSWYGPbfS6R3iBxeUEbUIhOOAnqeO00gTPNDJDP"
+
+# Coinbase Commerce
+COINBASE_COMMERCE_API_KEY = "your_coinbase_commerce_api_key"
+
+# Orange Money
+ORANGE_API_KEY = "your_orange_api_key"  
+ORANGE_MERCHANT_ID = "your_orange_merchant_id"  

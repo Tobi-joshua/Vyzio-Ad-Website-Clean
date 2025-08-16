@@ -1,1 +1,0 @@
-firebase/vyzio-ads-firebase-adminsdk-fbsvc-4b2ba55436.json

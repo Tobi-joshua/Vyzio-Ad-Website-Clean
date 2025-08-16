@@ -1470,7 +1470,6 @@ def create_ad_payment(request, pk):
     if ad.status == "active":
         return Response({"detail": "Ad already active."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # determine currency preference: user -> ad -> default
     currency = (getattr(user, "preferred_currency", None) or ad.currency or "").upper() or None
 
     # Find ListingPrice for the currency; fallback to default active listing price
@@ -1514,14 +1513,11 @@ def create_ad_payment(request, pk):
             currency=(currency or "USD"),
             payment_reference=payment_reference,
         )
-
         # mark ad as pending payment
         ad.status = "draft"
         ad.save(update_fields=["status"])
-
     # prepare smallest unit (cents/kobo etc.)
     amount_smallest_unit = int((amount * Decimal(100)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
-
     resp = {
         "payment_id": payment.id,
         "payment_reference": payment_reference,
@@ -1538,125 +1534,178 @@ def create_ad_payment(request, pk):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def confirm_ad_payment(request):
+def confirm_stripe_payment(request):
     """
-    Confirm a payment by verifying with the provider.
+    Confirm a Stripe payment.
     Expects { payment_reference, ad_id } in body.
     """
     payment_reference = request.data.get("payment_reference")
     ad_id = request.data.get("ad_id")
 
-    if not payment_reference or not ad_id:
-        return Response({"detail": "payment_reference and ad_id required."}, status=status.HTTP_400_BAD_REQUEST)
     try:
-        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id)
+        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
     except Payment.DoesNotExist:
         return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    # If already confirmed, return success
     if payment.status == "confirmed":
-        ad = payment.ad
-        return Response({"detail": "Already confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
+        return Response({"detail": "Already confirmed", "status": payment.ad.status})
 
-    # Only the user who created the payment or staff should confirm via client – ensure ownership
-    if payment.user != request.user and not request.user.is_staff:
-        return Response({"detail": "Not authorized to confirm this payment"}, status=status.HTTP_403_FORBIDDEN)
+    stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", None)
+    if not stripe.api_key:
+        return Response({"detail": "Stripe not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Try checkout session first
+    provider_payload = None
+    paid = False
+    try:
+        session = stripe.checkout.Session.retrieve(payment_reference)
+        provider_payload = session.to_dict()
+        if session.get("payment_intent"):
+            intent = stripe.PaymentIntent.retrieve(session.get("payment_intent"))
+            provider_payload["payment_intent"] = intent.to_dict()
+            paid = intent.status == "succeeded"
+        else:
+            paid = session.get("payment_status") == "paid"
+    except stripe.error.InvalidRequestError:
+        try:
+            intent = stripe.PaymentIntent.retrieve(payment_reference)
+            provider_payload = intent.to_dict()
+            paid = intent.status == "succeeded"
+        except stripe.error.InvalidRequestError:
+            paid = False
+
+    if paid:
+        with transaction.atomic():
+            payment.status = "confirmed"
+            payment.provider_payload = provider_payload
+            payment.save(update_fields=["status", "provider_payload"])
+            ad = payment.ad
+            ad.status = "pending"
+            ad.save(update_fields=["status"])
+        return Response({"detail": "Payment confirmed", "status": ad.status})
+    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def confirm_crypto_payment(request):
+    """
+    Confirm a Crypto payment (Coinbase Commerce).
+    Expects { payment_reference, ad_id } in body.
+    """
+    payment_reference = request.data.get("payment_reference")
+    ad_id = request.data.get("ad_id")
 
     try:
-        method = (payment.method or "").lower()
-        if method == "stripe":
-            # payment_reference may be a checkout session id or a payment_intent id
-            stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", None)
-            if not stripe.api_key:
-                return Response({"detail": "Stripe not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
+    except Payment.DoesNotExist:
+        return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
-            # Try retrieving session first (if you stored session id)
-            try:
-                session = stripe.checkout.Session.retrieve(payment_reference)
-            except stripe.error.InvalidRequestError:
-                session = None
-            paid = False
-            provider_payload = None
+    if payment.status == "confirmed":
+        return Response({"detail": "Already confirmed", "status": payment.ad.status})
 
-            if session:
-                provider_payload = session.to_dict()
-                # check payment_status or PaymentIntent status
-                payment_intent_id = session.get("payment_intent")
-                if payment_intent_id:
-                    intent = stripe.PaymentIntent.retrieve(payment_intent_id)
-                    provider_payload["payment_intent"] = intent.to_dict()
-                    paid = intent.status in ("succeeded",)
-                else:
-                    paid = session.get("payment_status") == "paid"
+    cb_key = getattr(settings, "COINBASE_COMMERCE_API_KEY", None)
+    if not cb_key:
+        return Response({"detail": "Crypto not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            else:
-                try:
-                    intent = stripe.PaymentIntent.retrieve(payment_reference)
-                    provider_payload = intent.to_dict()
-                    paid = intent.status in ("succeeded",)
-                except stripe.error.InvalidRequestError:
-                    paid = False
+    headers = {"X-CC-Api-Key": cb_key, "X-CC-Version": "2018-03-22"}
+    resp = requests.get(f"https://api.commerce.coinbase.com/charges/{payment_reference}", headers=headers, timeout=10)
+    resp.raise_for_status()
+    data = resp.json().get("data", {})
+    timeline = data.get("timeline", [])
+    paid = any(t.get("status", "").lower() in ("completed", "confirmed") for t in timeline)
 
-            if paid:
-                with transaction.atomic():
-                    payment.status = "confirmed"
-                    payment.provider_payload = provider_payload
-                    payment.save(update_fields=["status", "provider_payload"])
-                    ad = payment.ad
-                    ad.status = "active"
-                    ad.save(update_fields=["status"])
-                return Response({"detail": "Payment confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
-            return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+    if paid:
+        with transaction.atomic():
+            payment.status = "confirmed"
+            payment.provider_payload = data
+            payment.save(update_fields=["status", "provider_payload"])
+            ad = payment.ad
+            ad.status = "active"
+            ad.save(update_fields=["status"])
+        return Response({"detail": "Payment confirmed", "status": ad.status})
+    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
 
-        elif method == "crypto":
-            # Coinbase Commerce verification using charge code stored in payment_reference
-            cb_key = getattr(settings, "COINBASE_COMMERCE_API_KEY", None)
-            if not cb_key:
-                return Response({"detail": "Crypto provider not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            headers = {"X-CC-Api-Key": cb_key, "X-CC-Version": "2018-03-22"}
-            resp = requests.get(f"https://api.commerce.coinbase.com/charges/{payment_reference}", headers=headers, timeout=10)
-            resp.raise_for_status()
-            data = resp.json().get("data", {})
-            timeline = data.get("timeline", [])
-            paid = any(t.get("status", "").lower() in ("completed", "confirmed") for t in timeline)
 
-            if paid:
-                with transaction.atomic():
-                    payment.status = "confirmed"
-                    payment.provider_payload = data
-                    payment.save(update_fields=["status", "provider_payload"])
-                    ad = payment.ad
-                    ad.status = "active"
-                    ad.save(update_fields=["status"])
-                return Response({"detail": "Payment confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
-            return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def confirm_orange_payment(request):
+    """
+    Confirm an Orange Pay payment.
+    Expects { payment_reference, ad_id } in body.
+    """
+    payment_reference = request.data.get("payment_reference")
+    ad_id = request.data.get("ad_id")
 
-        elif method == "orange":
-            ORANGE_API_KEY = getattr(settings, "ORANGE_API_KEY", None)
-            if not ORANGE_API_KEY:
-                return Response({"detail": "Orange not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            resp = requests.get(f"https://api.orange.com/transactions/{payment_reference}", headers={"Authorization": f"Bearer {ORANGE_API_KEY}"}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("status") in ("SUCCESS", "COMPLETED", "PAID"):
-                with transaction.atomic():
-                    payment.status = "confirmed"
-                    payment.provider_payload = data
-                    payment.save(update_fields=["status", "provider_payload"])
-                    ad = payment.ad
-                return Response({"detail": "Payment confirmed", "status": ad.status, "is_active": getattr(ad, "is_active", False)})
-            return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
+    except Payment.DoesNotExist:
+        return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        else:
-            return Response({"detail": "Unsupported payment method"}, status=status.HTTP_400_BAD_REQUEST)
+    if payment.status == "confirmed":
+        return Response({"detail": "Already confirmed", "status": payment.ad.status})
 
-    except requests.RequestException as e:
-        return Response({"detail": "Provider verification failed", "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
-    except stripe.error.StripeError as e:
-        return Response({"detail": "Stripe error", "error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
-    except Exception as e:
-        return Response({"detail": "Verification error", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    ORANGE_API_KEY = getattr(settings, "ORANGE_API_KEY", None)
+    if not ORANGE_API_KEY:
+        return Response({"detail": "Orange not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    resp = requests.get(
+        f"https://api.orange.com/transactions/{payment_reference}",
+        headers={"Authorization": f"Bearer {ORANGE_API_KEY}"},
+        timeout=10
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if data.get("status") in ("SUCCESS", "COMPLETED", "PAID"):
+        with transaction.atomic():
+            payment.status = "confirmed"
+            payment.provider_payload = data
+            payment.save(update_fields=["status", "provider_payload"])
+            ad = payment.ad
+            ad.status = "active"
+            ad.save(update_fields=["status"])
+        return Response({"detail": "Payment confirmed", "status": ad.status})
+    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1679,6 +1728,7 @@ def validate_file(f):
         raise ValidationError(f"Unsupported file type: {f.name}")
     if f.size > MAX_SIZE:
         raise ValidationError(f"File too large: {f.name} (max 10MB)")
+
 
 @api_view(["GET", "PUT", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
