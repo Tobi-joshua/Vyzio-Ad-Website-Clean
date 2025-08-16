@@ -1,11 +1,11 @@
 // SellerCreateAdFormTwoStep.jsx
-import React, { useState, useContext, useMemo } from "react";
+import React, { useState, useContext, useMemo, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Box, Typography, TextField, Button, CircularProgress,
   Stack, Alert, InputAdornment, Avatar, IconButton, Grid,
   Dialog, DialogTitle, DialogContent, DialogActions,
-  MenuItem, FormControl, InputLabel, Select, LinearProgress
+  MenuItem, FormControl, InputLabel, Select, LinearProgress, Divider,
 } from "@mui/material";
 import AddPhotoIcon from "@mui/icons-material/AddPhotoAlternate";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -30,7 +30,6 @@ const isAllowedSize = (file) => {
 const CURRENCY_OPTIONS = ["USD", "NGN", "CAD", "GBP", "EUR", "XEN"];
 const PAYMENT_METHODS = [
   { value: 'stripe', label: 'Stripe' },
-  { value: 'orange', label: 'Orange Pay' },
   { value: 'crypto', label: 'Crypto' },
 ];
 
@@ -86,6 +85,87 @@ export default function SellerCreateAdFormTwoStep() {
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [successIsActive, setSuccessIsActive] = useState(false);
+
+  // redirect-confirm handling
+  const [redirectConfirming, setRedirectConfirming] = useState(false);
+  const [redirectConfirmError, setRedirectConfirmError] = useState(null);
+
+  // -------- confirm payment on server (Stripe) --------
+  const confirmStripePaymentOnServer = async ({ payment_reference, ad_id }) => {
+    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/stripe/`, {
+      method: "POST",
+      headers: getJsonHeaders(),
+      credentials: "include",
+      body: JSON.stringify({ payment_reference, ad_id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to confirm Stripe payment");
+    }
+    return res.json();
+  };
+
+  // -------- confirm payment on server (Crypto) --------
+  const confirmCryptoPaymentOnServer = async ({ payment_reference, ad_id }) => {
+    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/crypto/`, {
+      method: "POST",
+      headers: getJsonHeaders(),
+      credentials: "include",
+      body: JSON.stringify({ payment_reference, ad_id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to confirm Crypto payment");
+    }
+    return res.json();
+  };
+
+  // automatically handle Stripe redirect returns on the same page
+  useEffect(() => {
+    const qp = new URLSearchParams(window.location.search);
+    const payment_reference = qp.get("payment_reference");
+    const ad_id = qp.get("ad_id");
+    // only proceed if both present
+    if (!payment_reference || !ad_id) return;
+
+    // Avoid running multiple times
+    if (redirectConfirming) return;
+
+    (async () => {
+      try {
+        setRedirectConfirming(true);
+        setRedirectConfirmError(null);
+        const resp = await confirmStripePaymentOnServer({ payment_reference, ad_id });
+        if (resp?.ad) {
+          setAdData(prev => ({ ...(prev || {}), ...(resp.ad || {}) }));
+        }
+        if ((resp.status ?? resp.ad?.status) === "active") {
+          setSuccessIsActive(true);
+          setSuccessMessage(resp.detail || "Payment confirmed — your ad is active.");
+        } else {
+          setSuccessIsActive(false);
+          setSuccessMessage(resp.detail || "Payment received — awaiting approval.");
+        }
+        setSuccessModalOpen(true);
+      } catch (err) {
+        console.error("Redirect confirm error:", err);
+        setRedirectConfirmError(err.message || "Payment confirmation failed on return.");
+        showToast({ message: err.message || "Failed to confirm payment after redirect", severity: "error" });
+      } finally {
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("payment_reference");
+          url.searchParams.delete("ad_id");
+          url.searchParams.delete("stripe_status");
+          window.history.replaceState({}, document.title, url.pathname + url.search);
+        } catch (e) {
+          // ignore replaceState errors
+        }
+        setRedirectConfirming(false);
+      }
+    })();
+    // include the function deps that effect uses to satisfy eslint
+  }, [redirectConfirming /* confirmStripePaymentOnServer and showToast are stable in this component */]);
 
   // file handlers
   const handleHeaderImageChange = (e) => {
@@ -218,6 +298,7 @@ export default function SellerCreateAdFormTwoStep() {
   };
 
   // -------- create payment instance (server) --------
+  // Note: we normalize returned fields so frontend can rely on client_secret_key & publishable_key fields.
   const createPaymentInstance = async (adIdArg, method) => {
     const adId = adIdArg || adData?.id;
     if (!adId) throw new Error("No ad ID for payment");
@@ -234,60 +315,25 @@ export default function SellerCreateAdFormTwoStep() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || err.error || "Failed to create payment instance");
       }
-      const json = await res.json();
-      setPaymentDetails(json);
+      const jsonRaw = await res.json();
+
+      // normalize server keys (support both client_secret and client_secret_key)
+      const normalized = {
+        ...jsonRaw,
+        client_secret_key: jsonRaw.client_secret_key || jsonRaw.client_secret || null,
+        publishable_key: jsonRaw.publishable_key || jsonRaw.publishableKey || jsonRaw.publishable || null,
+        ad_id: jsonRaw.ad_id || jsonRaw.adId || adId,
+      };
+
+      setPaymentDetails(normalized);
+      // open dialog so user can complete payment if provider requires inline interaction
       setPaymentDialogOpen(true);
       // optimistic: mark pending locally
       setAdData(prev => prev ? { ...prev, status: "pending" } : prev);
-      return json;
+      return normalized;
     } finally {
       setCreatingPayment(false);
     }
-  };
-
-  // -------- confirm payment on server (Stripe) --------
-  const confirmStripePaymentOnServer = async ({ payment_reference, ad_id }) => {
-    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/stripe/`, {
-      method: "POST",
-      headers: getJsonHeaders(),
-      credentials: "include",
-      body: JSON.stringify({payment_reference, ad_id}),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to confirm Stripe payment");
-    }
-    return res.json();
-  };
-
-  // -------- confirm payment on server (Crypto) --------
-  const confirmCryptoPaymentOnServer = async ({ payment_reference, ad_id }) => {
-    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/crypto/`, {
-      method: "POST",
-      headers: getJsonHeaders(),
-      credentials: "include",
-      body: JSON.stringify({ payment_reference, ad_id }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to confirm Crypto payment");
-    }
-    return res.json();
-  };
-
-  // -------- confirm payment on server (OrangePay) --------
-  const confirmOrangePaymentOnServer = async ({ payment_reference, ad_id }) => {
-    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/orange/`, {
-      method: "POST",
-      headers: getJsonHeaders(),
-      credentials: "include",
-      body: JSON.stringify({ payment_reference, ad_id }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to confirm OrangePay payment");
-    }
-    return res.json();
   };
 
   async function handleManualConfirm(reference, method) {
@@ -305,8 +351,6 @@ export default function SellerCreateAdFormTwoStep() {
         serverResp = await confirmStripePaymentOnServer({ payment_reference: reference, ad_id: adId });
       } else if (method === "crypto") {
         serverResp = await confirmCryptoPaymentOnServer({ payment_reference: reference, ad_id: adId });
-      } else if (method === "orange") {
-        serverResp = await confirmOrangePaymentOnServer({ payment_reference: reference, ad_id: adId });
       } else {
         throw new Error("Unsupported payment method");
       }
@@ -337,7 +381,7 @@ export default function SellerCreateAdFormTwoStep() {
     }
   }
 
-  // Launch provider (open checkout URL if provided)
+  // Launch provider (checkout_url or just show message for crypto)
   const launchProvider = () => {
     if (!paymentDetails) return;
     if (paymentDetails.checkout_url) {
@@ -346,10 +390,25 @@ export default function SellerCreateAdFormTwoStep() {
       return;
     }
     if (paymentDetails.crypto_address) {
-      showToast({ message: 'Follow the instructions to complete crypto payment', severity: 'info' });
+      setPaymentDialogOpen(true);
       return;
     }
+    // if only client_secret exists, we want the dialog open so stripe element is visible
+    if (paymentDetails.client_secret_key) {
+      setPaymentDialogOpen(true);
+      return;
+    }
+
     showToast({ message: 'No external URL provided — use the manual reference to confirm when done', severity: 'info' });
+  };
+
+  // helper: check whether current paymentDetails is already for this ad
+  const isPaymentInitForAd = (adId) => {
+    if (!paymentDetails) return false;
+    if (paymentAdId && Number(paymentAdId) === Number(adId)) return true;
+    if (paymentDetails.ad_id && Number(paymentDetails.ad_id) === Number(adId)) return true;
+    // if paymentDetails contains payment_id or payment_reference assume it's for this ad (best-effort)
+    return false;
   };
 
   // UI handlers
@@ -363,12 +422,45 @@ export default function SellerCreateAdFormTwoStep() {
     try { await uploadImagesToAd(adData?.id); } catch {};
   };
 
+  // handlePayNow now reuses existing paymentDetails if available, otherwise creates a payment instance
   const handlePayNow = async () => {
     const adId = adData?.id;
     if (!adId) { showToast({ message: "No ad to pay for", severity: "error" }); return; }
+
+    // If payment details already initialized for this ad, reuse them
+    if (isPaymentInitForAd(adId) && paymentDetails) {
+      // If provider gives checkout_url -> open it
+      if (paymentDetails.checkout_url) {
+        launchProvider();
+        return;
+      }
+      // If Stripe client secret available -> open dialog to show PaymentElement
+      if (paymentDetails.client_secret_key) {
+        setPaymentDialogOpen(true);
+        return;
+      }
+      // If crypto address -> open dialog to show address
+      if (paymentDetails.crypto_address) {
+        setPaymentDialogOpen(true);
+        return;
+      }
+      // Otherwise fallback to creating a fresh payment instance
+    }
+
+    // No existing payment: create one and let createPaymentInstance open the dialog
     try {
       setCreatingPayment(true);
-      await createPaymentInstance(adId, paymentMethod);
+      const pd = await createPaymentInstance(adId, paymentMethod);
+      if (pd) {
+        // If server returned a checkout_url we may want to open it immediately
+        if (pd.checkout_url) {
+          window.open(pd.checkout_url, '_blank');
+        } else if (pd.client_secret_key) {
+          setPaymentDialogOpen(true);
+        } else if (pd.crypto_address) {
+          setPaymentDialogOpen(true);
+        }
+      }
     } catch (err) {
       showToast({ message: err.message || "Payment initialization failed", severity: "error" });
     } finally {
@@ -403,12 +495,13 @@ export default function SellerCreateAdFormTwoStep() {
   // -------- STRIPE INTEGRATION --------
   // stripePromise uses server-supplied publishable_key if present; fallback to env var if needed
   const stripePromise = useMemo(() => {
-    const key = paymentDetails?.publishable_key || process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY || null;
+    const key = paymentDetails?.publishable_key || paymentDetails?.publishableKey;
     return key ? loadStripe(key) : null;
-  }, [paymentDetails?.publishable_key]);
+  }, [paymentDetails?.publishable_key, paymentDetails?.publishableKey]);
 
   // Inner component to render Stripe Payment Element and confirm inline
-  function StripePaymentElement({ clientSecret }) {
+  // NOTE: accept paymentReference & adId as props — avoids referencing undefined external variables
+  function StripePaymentElement({ clientSecret, paymentReference, adId }) {
     const stripe = useStripe();
     const elements = useElements();
     const [processing, setProcessing] = useState(false);
@@ -420,10 +513,15 @@ export default function SellerCreateAdFormTwoStep() {
       }
       setProcessing(true);
       try {
+        // build return url that points back to the same page with our server payment_reference & ad id
+        const serverPaymentReference = paymentReference || paymentDetails?.payment_reference || null;
+        const serverAdId = adId || adData?.id || null;
+        const returnUrl = `${window.location.origin}${window.location.pathname}?payment_reference=${encodeURIComponent(serverPaymentReference || "")}&ad_id=${encodeURIComponent(serverAdId || "")}`;
+
         const result = await stripe.confirmPayment({
           elements,
           confirmParams: {
-            return_url: window.location.origin + "/sellers/ads/payment-complete",
+            return_url: returnUrl,
           },
           redirect: "if_required",
         });
@@ -435,13 +533,13 @@ export default function SellerCreateAdFormTwoStep() {
           return;
         }
 
+        // If we get a paymentIntent back (no redirect needed), confirm on server immediately
         const paymentIntent = result.paymentIntent || null;
-
-        if (paymentIntent && (paymentIntent.status === "succeeded" || paymentIntent.status === "requires_capture" || paymentIntent.status === "processing")) {
-          // confirm on server using same manual confirm flow
-          await handleManualConfirm(paymentIntent.id, "stripe");
+        if (paymentIntent && paymentIntent.id) {
+          const serverReference = serverPaymentReference || paymentIntent.id;
+          await handleManualConfirm(serverReference, "stripe");
         } else {
-          showToast({ message: "Payment not completed. Please follow any next steps shown by your provider.", severity: "info" });
+          // If redirect happened, the existing useEffect will handle confirm on return.
         }
       } catch (err) {
         console.error("Stripe confirm error:", err);
@@ -478,6 +576,8 @@ export default function SellerCreateAdFormTwoStep() {
   }
 
   // ------------------- UI -------------------
+  const payButtonLabel = (adData?.id && isPaymentInitForAd(adData.id)) ? "Continue payment" : "Pay & Publish";
+
   return (
     <Box maxWidth={980} mx="auto" my={4} p={3}
       sx={{ bgcolor: "background.paper", boxShadow: 3, borderRadius: 2, borderLeft: `6px solid ${accent}` }}>
@@ -592,7 +692,7 @@ export default function SellerCreateAdFormTwoStep() {
         <Box>
           <Alert severity="success">Ad created. Ready to publish.</Alert>
           <Box sx={{ mt: 2 }}>
-            <Typography variant="subtitle1">{adData?.title}</Typography>
+            <Typography variant="subtitle1" fontWeight="bold">{adData?.title}</Typography>
             <Typography variant="body2" color="text.secondary">{currency} {adData?.price ?? price}</Typography>
           </Box>
 
@@ -604,9 +704,9 @@ export default function SellerCreateAdFormTwoStep() {
               onClick={handlePayNow}
               disabled={!adData || creatingPayment}
             >
-              {creatingPayment ? <CircularProgress size={18} color="inherit" /> : "Pay & Publish"}
+              {creatingPayment ? <CircularProgress size={18} color="inherit" /> : payButtonLabel}
             </Button>
-            <Button variant="text" onClick={() => { showToast({ message: "Will publish later", severity: "info" }); navigate("/sellers/dashboard"); }}>
+            <Button variant="outlined" onClick={() => { showToast({ message: "Will publish later", severity: "info" }); navigate("/sellers/dashboard"); }}>
               Publish later
             </Button>
           </Stack>
@@ -614,102 +714,147 @@ export default function SellerCreateAdFormTwoStep() {
       )}
 
       {/* Payment dialog */}
-      <Dialog open={paymentDialogOpen} onClose={() => setPaymentDialogOpen(false)}>
-        <DialogTitle>Pay to publish your ad</DialogTitle>
+      <Dialog open={paymentDialogOpen} onClose={() => setPaymentDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          <Typography variant="h6" fontWeight="bold">Complete Your Payment</Typography>
+        </DialogTitle>
+
         <DialogContent>
-          <Typography variant="body2" sx={{ mb: 1 }}>
-            Your ad is currently <strong>pending</strong>. Pay the listing fee to activate it.
+          <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+            Your ad is currently <strong>pending</strong>. Please pay the listing fee to activate it.
           </Typography>
 
-          <FormControl fullWidth sx={{ my: 1 }}>
-            <InputLabel id="payment-method-label">Payment method</InputLabel>
+          {/* Order summary */}
+          <Box sx={{ p: 2, mb: 3, border: '1px solid', borderColor: 'divider', borderRadius: 2, bgcolor: 'grey.50' }}>
+            <Typography variant="subtitle2" color="text.secondary">Ad Title</Typography>
+            <Typography variant="body1" fontWeight="medium" gutterBottom>{adData?.title}</Typography>
+
+            <Typography variant="subtitle2" color="text.secondary">Advertised Price</Typography>
+            <Typography variant="body1" gutterBottom>{currency} {adData?.price ?? price}</Typography>
+
+            <Divider sx={{ my: 1 }} />
+
+            <Typography variant="subtitle2" color="text.secondary">Listing Fee</Typography>
+            {paymentDetails ? (
+              <Typography variant="h6" fontWeight="bold" color="primary">
+                {paymentDetails.currency} {paymentDetails.amount}
+              </Typography>
+            ) : (
+              <LinearProgress sx={{ mt: 1 }} />
+            )}
+          </Box>
+
+          {/* Payment method */}
+          <FormControl fullWidth sx={{ mb: 2 }}>
+            <InputLabel id="payment-method-label">Select payment method</InputLabel>
             <Select
               labelId="payment-method-label"
               value={paymentMethod}
               label="Payment method"
               onChange={(e) => setPaymentMethod(e.target.value)}
             >
-              {PAYMENT_METHODS.map(m => <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>)}
+              {PAYMENT_METHODS.map(m => (
+                <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+              ))}
             </Select>
           </FormControl>
 
-          <Box sx={{ mt: 1 }}>
-            <Typography variant="body2">Ad title: {adData?.title}</Typography>
-            <Typography variant="body2">Advertised price: {currency} {adData?.price ?? price}</Typography>
-          </Box>
+          {/* Provider or Stripe UI */}
+          {paymentDetails && (
+            <Box>
+              {paymentDetails.checkout_url && (
+                <Button sx={{ mt: 2 }} variant="contained" fullWidth onClick={launchProvider}>
+                  Open payment provider
+                </Button>
+              )}
 
-          <Box mt={2}>
-            <Typography variant="body2">Listing fee:</Typography>
-            {paymentDetails ? (
-              <Box>
-                <Typography variant="h6">{paymentDetails.currency} {paymentDetails.amount}</Typography>
-
-                {paymentDetails.checkout_url && (
-                  <Button sx={{ mt: 1 }} variant="contained" onClick={launchProvider}>Open payment provider</Button>
-                )}
-
-                {paymentDetails.crypto_address && (
-                  <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="body2">Address: {paymentDetails.crypto_address}</Typography>
-                    <IconButton size="small" onClick={() => copyToClipboard(paymentDetails.crypto_address)}><ContentCopyIcon fontSize="small" /></IconButton>
+              {paymentMethod === "stripe" && paymentDetails.client_secret_key && stripePromise && (
+                <Elements stripe={stripePromise} options={{ clientSecret: paymentDetails.client_secret_key }}>
+                  <Box sx={{ mt: 2, p: 2, border: '1px dashed', borderColor: 'divider', borderRadius: 2 }}>
+                    <StripePaymentElement
+                      clientSecret={paymentDetails.client_secret_key}
+                      paymentReference={paymentDetails.payment_reference}
+                      adId={adData?.id}
+                    />
                   </Box>
-                )}
+                </Elements>
+              )}
 
-                {/* Render Stripe PaymentElement when:
-                    - user selected stripe
-                    - server returned a client_secret (PaymentIntent) and we have a publishable key */}
-                {paymentMethod === "stripe" && paymentDetails.client_secret && stripePromise ? (
-                  <Elements stripe={stripePromise} options={{ clientSecret: paymentDetails.client_secret }}>
-                    <StripePaymentElement clientSecret={paymentDetails.client_secret} />
-                  </Elements>
-                ) : null}
-
-                {paymentDetails.payment_reference ? (
-                  <Box sx={{ mt: 1 }}>
-                    <Typography variant="body2">Reference: {paymentDetails.payment_reference}</Typography>
-                    <Button sx={{ mt: 1 }} variant="outlined" onClick={() => handleManualConfirm(paymentDetails.payment_reference)}>I have paid — Verify</Button>
+              {paymentDetails.crypto_address && (
+                <Box sx={{ mt: 2, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+                  <Typography variant="subtitle2">Send crypto to:</Typography>
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Typography variant="body2" fontFamily="monospace">{paymentDetails.crypto_address}</Typography>
+                    <IconButton size="small" onClick={() => copyToClipboard(paymentDetails.crypto_address)}>
+                      <ContentCopyIcon fontSize="small" />
+                    </IconButton>
                   </Box>
-                ) : (
-                  !paymentDetails.client_secret && (
-                    <Box sx={{ mt: 1 }}>
-                      <Typography variant="caption" color="text.secondary">If your provider returns a reference after payment, paste it here to verify.</Typography>
-                      <TextField
-                        placeholder="Enter payment reference"
+                </Box>
+              )}
+
+              {/* Manual reference / verify — shown only for non-Stripe providers (crypto) */}
+              {paymentMethod !== "stripe" && (
+                <>
+                  {paymentDetails.payment_reference ? (
+                    <Box sx={{ mt: 3 }}>
+                      <Typography variant="body2" fontWeight="bold">
+                        Reference: {paymentDetails.payment_reference}
+                      </Typography>
+
+                      <Button
+                        sx={{ mt: 2 }}
                         fullWidth
-                        value={manualReference}
-                        onChange={(e) => setManualReference(e.target.value)}
-                        sx={{ mt: 1 }}
-                      />
-                      <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                        <Button variant="contained" onClick={() => launchProvider()}>Open provider</Button>
-                        <Button variant="outlined" onClick={() => handleManualConfirm(manualReference)} disabled={!manualReference}>Verify</Button>
-                      </Stack>
+                        variant="outlined"
+                        onClick={() => handleManualConfirm(paymentDetails.payment_reference, paymentMethod)}
+                      >
+                        I have paid — Verify
+                      </Button>
                     </Box>
-                  )
-                )}
-              </Box>
-            ) : (
-              <>
-                <Typography variant="body2">Loading fee…</Typography>
-                <LinearProgress sx={{ mt: 1 }} />
-              </>
-            )}
-          </Box>
+                  ) : (
+                    !paymentDetails.client_secret_key && (
+                      <Box sx={{ mt: 3 }}>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          After completing the payment with the provider, paste the returned reference here to verify.
+                        </Typography>
+
+                        <TextField
+                          placeholder="Enter payment reference"
+                          fullWidth
+                          size="small"
+                          value={manualReference}
+                          onChange={(e) => setManualReference(e.target.value)}
+                          sx={{ mt: 1 }}
+                        />
+
+                        <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                          <Button variant="contained" fullWidth onClick={launchProvider}>
+                            Open Provider
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            fullWidth
+                            onClick={() => handleManualConfirm(manualReference, paymentMethod)}
+                            disabled={!manualReference}
+                          >
+                            Verify
+                          </Button>
+                        </Stack>
+                      </Box>
+                    )
+                  )}
+                </>
+              )}
+            </Box>
+          )}
         </DialogContent>
-        <DialogActions>
-          <Button onClick={CloseDialogAndNavigate}>Pay later</Button>
-          <Button
-            variant="contained"
-            onClick={() => { setCreatingPayment(true); createPaymentInstance(paymentAdId || adData?.id, paymentMethod).finally(() => setCreatingPayment(false)); }}
-            disabled={creatingPayment}
-          >
-            {creatingPayment ? <CircularProgress size={18} color="inherit" /> : "Init payment"}
-          </Button>
+
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button variant="outlined" onClick={CloseDialogAndNavigate}>Pay later</Button>
         </DialogActions>
       </Dialog>
 
       {/* Verifying dialog */}
-      <Dialog open={verifyingPayment} onClose={() => {}} PaperProps={{ sx: { p: 2, width: 380 } }}>
+      <Dialog open={verifyingPayment} onClose={() => { }} PaperProps={{ sx: { p: 2, width: 380 } }}>
         <DialogTitle>Verifying payment</DialogTitle>
         <DialogContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 2 }}>
           <CircularProgress />

@@ -88,9 +88,6 @@ from firebase_admin import auth as firebase_auth
 logger = logging.getLogger(__name__)
 GOOGLE_CLIENT_ID = "1094040105500-n1chuvrvp648phgra7qh2q6ctq4vr8s6.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET = "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"
-PAYSTACK_SECRET_KEY = "sk_test_ecc3615c6bad5eecc58dcd40c09270d0ee7a424b"
-PAYSTACK_PUBLIC_KEY = "pk_test_de98e2843175df97c704268ef5608b106d69d5ce"
-
 
 
 
@@ -1451,58 +1448,101 @@ def generate_payment_reference():
     return f"VYZIO-PAY-{uuid.uuid4().hex[:12].upper()}"
 
 
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_ad_payment(request, pk):
     """
     Create a Payment instance for the given ad.
-    Uses ListingPrice set by admin for the seller's currency (user.preferred_currency
-    or ad.currency fallback). This endpoint only creates the Payment record;
-    provider integrations (Stripe, Orange, Crypto) should be handled in
-    confirm endpoints.
+    Uses ListingPrice set by admin for the seller's currency
+    (user.preferred_currency or ad.currency fallback).
+
+    This endpoint only creates the Payment record;
+    provider integrations (Stripe, Orange, Crypto)
+    should be handled in confirm endpoints.
     """
     user = request.user
+
+    # --- Validate Ad ownership ---
     try:
         ad = Ad.objects.get(pk=pk, user=user)
     except Ad.DoesNotExist:
-        return Response({"detail": "Ad not found or not owned by you."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"detail": "Ad not found or not owned by you."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     if ad.status == "active":
-        return Response({"detail": "Ad already active."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"detail": "Ad already active."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    currency = (getattr(user, "preferred_currency", None) or ad.currency or "").upper() or None
+    # --- Resolve currency ---
+    currency = (
+        getattr(user, "preferred_currency", None) or ad.currency or ""
+    ).upper() or None
 
-    # Find ListingPrice for the currency; fallback to default active listing price
     lp = None
     if currency:
-        lp = ListingPrice.objects.filter(currency__iexact=currency, active=True).order_by("-is_default").first()
+        lp = (
+            ListingPrice.objects.filter(currency__iexact=currency, active=True)
+            .order_by("-is_default")
+            .first()
+        )
     if not lp:
         lp = ListingPrice.objects.filter(is_default=True, active=True).first()
         if lp:
             currency = (lp.currency or "USD").upper()
 
-    if lp:
-        listing_fee = lp.amount
-    else:
-        listing_fee = Decimal("0.00")
+    listing_fee = lp.amount if lp else Decimal("0.00")
+    amount = Decimal(listing_fee).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
 
-    # ensure Decimal with 2 places
-    amount = Decimal(listing_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-    # generate unique reference
+    # --- Generate unique reference ---
     payment_reference = generate_payment_reference()
 
-    # normalize incoming method
+    # --- Normalize incoming method ---
     method = (request.data.get("method") or "").lower()
+    publishable_key = None
+    client_secret_key = None
+
     if method in ("card", "stripe"):
         method_key = "stripe"
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        intent = stripe.PaymentIntent.create(
+            amount=int(amount * 100),
+            currency=(currency or "USD").lower(),
+            metadata={"payment_reference": payment_reference, "ad_id": ad.id},
+        )
+        publishable_key = settings.STRIPE_PUBLISHABLE_KEY
+        client_secret_key = intent.client_secret
+
     elif method in ("mobile_money", "orange", "orange_pay"):
         method_key = "orange"
+        publishable_key = "ORANGE_PUBLIC_KEY"
+        client_secret_key = "ORANGE_CLIENT_SECRET_KEY"
+
     elif method in ("crypto", "coinbase", "crypto_currency"):
         method_key = "crypto"
+        publishable_key = "CRYPTO_PUBLIC_KEY"
+        client_secret_key = "CRYPTO_CLIENT_SECRET_KEY"
+
     else:
         method_key = "stripe"
 
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        intent = stripe.PaymentIntent.create(
+            amount=int(amount * 100),
+            currency=(currency or "USD").lower(),
+            metadata={"payment_reference": payment_reference, "ad_id": ad.id},
+        )
+        publishable_key = settings.STRIPE_PUBLISHABLE_KEY
+        client_secret_key = intent.client_secret
+
+    # --- Create Payment record ---
     with transaction.atomic():
         payment = Payment.objects.create(
             user=user,
@@ -1512,12 +1552,18 @@ def create_ad_payment(request, pk):
             status="initiated",
             currency=(currency or "USD"),
             payment_reference=payment_reference,
+            publishable_key=publishable_key,
+            client_secret_key=client_secret_key,
         )
+
         # mark ad as pending payment
         ad.status = "draft"
         ad.save(update_fields=["status"])
-    # prepare smallest unit (cents/kobo etc.)
-    amount_smallest_unit = int((amount * Decimal(100)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+    # --- Response payload ---
+    amount_smallest_unit = int(
+        (amount * Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
     resp = {
         "payment_id": payment.id,
         "payment_reference": payment_reference,
@@ -1526,8 +1572,11 @@ def create_ad_payment(request, pk):
         "currency": payment.currency,
         "method": method_key,
         "status": payment.status,
-        "notice": "Payment record created. Confirm via provider-specific endpoint."
+        "publishable_key": publishable_key,
+        "client_secret_key": client_secret_key,
+        "notice": "Payment record created. Confirm via provider-specific endpoint.",
     }
+
     return Response(resp, status=status.HTTP_201_CREATED)
 
 
@@ -1627,48 +1676,6 @@ def confirm_crypto_payment(request):
         return Response({"detail": "Payment confirmed", "status": ad.status})
     return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
 
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def confirm_orange_payment(request):
-    """
-    Confirm an Orange Pay payment.
-    Expects { payment_reference, ad_id } in body.
-    """
-    payment_reference = request.data.get("payment_reference")
-    ad_id = request.data.get("ad_id")
-
-    try:
-        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
-    except Payment.DoesNotExist:
-        return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    if payment.status == "confirmed":
-        return Response({"detail": "Already confirmed", "status": payment.ad.status})
-
-    ORANGE_API_KEY = getattr(settings, "ORANGE_API_KEY", None)
-    if not ORANGE_API_KEY:
-        return Response({"detail": "Orange not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    resp = requests.get(
-        f"https://api.orange.com/transactions/{payment_reference}",
-        headers={"Authorization": f"Bearer {ORANGE_API_KEY}"},
-        timeout=10
-    )
-    resp.raise_for_status()
-    data = resp.json()
-
-    if data.get("status") in ("SUCCESS", "COMPLETED", "PAID"):
-        with transaction.atomic():
-            payment.status = "confirmed"
-            payment.provider_payload = data
-            payment.save(update_fields=["status", "provider_payload"])
-            ad = payment.ad
-            ad.status = "active"
-            ad.save(update_fields=["status"])
-        return Response({"detail": "Payment confirmed", "status": ad.status})
-    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 

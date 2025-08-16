@@ -272,8 +272,5 @@ STRIPE_SECRET_KEY = "sk_test_51RwhU9Eg4d2kFkAHEhqgG63HK6LzgfeanvzETKgecv5IIpnuH9
 STRIPE_PUBLISHABLE_KEY = "pk_test_51RwhU9Eg4d2kFkAHvMoNUhVHAphA1hx9QIoGYQHYt11khLQ2Yrr8hqomQPMTSWYGPbfS6R3iBxeUEbUIhOOAnqeO00gTPNDJDP"
 
 # Coinbase Commerce
-COINBASE_COMMERCE_API_KEY = "your_coinbase_commerce_api_key"
+COINBASE_COMMERCE_API_KEY = "7d48874a-3552-4007-94a6-98edb8c86d7a"
 
-# Orange Money
-ORANGE_API_KEY = "your_orange_api_key"  
-ORANGE_MERCHANT_ID = "your_orange_merchant_id"  

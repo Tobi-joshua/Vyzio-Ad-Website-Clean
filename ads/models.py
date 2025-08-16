@@ -283,6 +283,8 @@ class Payment(models.Model):
     provider_payload = models.JSONField(null=True, blank=True)
     currency = models.CharField(max_length=3, default='USD')  
     crypto_address = models.CharField(max_length=255, blank=True, null=True)
+    publishable_key = models.CharField(max_length=255, blank=True, null=True)
+    client_secret_key = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     payment_reference = models.CharField(max_length=255, blank=True, null=True)
 
