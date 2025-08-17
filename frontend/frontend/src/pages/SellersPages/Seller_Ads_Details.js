@@ -196,7 +196,7 @@ const SellerAdsDetails = () => {
             <Button variant="outlined" color="error" onClick={() => {
               // keep delete hook - replace with confirmation / API call as needed
               if (window.confirm("Delete this ad? This action cannot be undone.")) {
-                fetch(`${API_BASE_URL}/sellers/ads/${ad.id}/`, {
+                fetch(`${API_BASE_URL}/api/seller/delete/ads/${ad.id}/`, {
                   method: "DELETE",
                   headers: getAuthHeaders(),
                   credentials: "include"

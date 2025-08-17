@@ -44,6 +44,8 @@ import SellerMessages from './pages/SellersPages/SellerMessages';
 import SellerOrders from './pages/SellersPages/SellerAdsOrders';
 import SellerNotifications from './pages/SellersPages/SellerNotificationList';
 import SellerAdsAnalytics from './pages/SellersPages/SellerAdsAnalytics';
+import HelpCenterSeller from './pages/SellersPages/HelpCenter';
+import SellerAccountSettings from './pages/SellersPages/Sellers_Account_Settings';
 
 
 
@@ -99,7 +101,7 @@ function App() {
 
 
 
-          {/* Buyer routes wrapped inside context/layout wrapper */}
+          {/* Seller routes wrapped inside context/layout wrapper */}
             <Route path="/sellers" element={<SellersPagesWrapper/>}>
               <Route path="dashboard" element={<SellerDashboard/>} />
               <Route path="categories" element={<SellerAdsCategories />} />
@@ -111,8 +113,8 @@ function App() {
               <Route path="orders" element={<SellerOrders/>} />
               <Route path="notifications-list" element={<SellerNotifications />} />
               <Route path="analytics" element={<SellerAdsAnalytics />} />
-
-
+              <Route path='help' element={<HelpCenterSeller/>} />
+               <Route path='account-settings' element={<SellerAccountSettings/>} />
             </Route>
 
 

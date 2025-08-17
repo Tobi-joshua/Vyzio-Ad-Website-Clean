@@ -1,4 +1,4 @@
-import React, { useContext, useState } from "react";
+import React, { useContext, useState, useMemo } from "react";
 import {
   Box,
   Avatar,
@@ -21,25 +21,135 @@ import {
   Chip,
   Tooltip,
   useTheme,
+  useMediaQuery,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import ChatIcon from "@mui/icons-material/Chat";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
+import VisibilityIcon from "@mui/icons-material/Visibility";
 import { useNavigate } from "react-router-dom";
 import { SellerDashboardContext } from "./index";
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,Cell } from "recharts";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  ResponsiveContainer,
+  CartesianGrid,
+  Cell,
+  Tooltip as RechartsTooltip,
+  Legend,
+} from "recharts";
 import { API_BASE_URL } from "../../constants";
 
-export default function SellerDashboard(){
+/* Palette */
+const COLORS = ["#6C5CE7", "#00B894", "#0984e3", "#fdcb6e", "#e17055", "#00cec9", "#636e72"];
+
+function formatCurrency(val) {
+  if (val == null || Number.isNaN(Number(val))) return "-";
+  return `$${Number(val).toFixed(2)}`;
+}
+
+/* Reusable Section wrapper with left accent and label */
+const Section = ({ title, color = COLORS[0], actions = null, children, sx = {}, role }) => (
+  <Paper
+    elevation={1}
+    role={role || "region"}
+    aria-label={title}
+    sx={{
+      borderLeft: `6px solid ${color}`,
+      p: { xs: 1, sm: 1.5 },
+      backgroundColor: `${color}0F`, // subtle tint
+      ...sx,
+    }}
+  >
+    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+      <Box>
+        <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+          {title}
+        </Typography>
+      </Box>
+      {actions}
+    </Stack>
+    <Divider sx={{ mb: 1 }} />
+    <Box sx={{ mt: 1 }}>{children}</Box>
+  </Paper>
+);
+
+/* Stat card (uniform) */
+const StatCard = ({ title, value, onClick, color = "#fff", cta }) => (
+  <Card
+    onClick={onClick}
+    sx={{
+      display: "flex",
+      alignItems: "center",
+      gap: 2,
+      p: 2,
+      minHeight: 100,
+      cursor: onClick ? "pointer" : "default",
+      borderRadius: 2,
+      boxShadow: 3,
+      transition: "transform 0.12s ease",
+      "&:hover": onClick ? { transform: "translateY(-3px)" } : {},
+      backgroundColor: `${color}20`,
+    }}
+  >
+    <Box sx={{ width: 8, height: 56, backgroundColor: color, borderRadius: 1 }} />
+    <Box sx={{ flex: 1 }}>
+      <Typography variant="caption" color="text.secondary">
+        {title}
+      </Typography>
+      <Typography variant="h4" sx={{ fontWeight: 800 }}>
+        {value ?? 0}
+      </Typography>
+      {cta && (
+        <Typography variant="caption" color="text.secondary">
+          {cta}
+        </Typography>
+      )}
+    </Box>
+  </Card>
+);
+
+/* Colored bar chart for overview */
+const StatsBarChart = ({ data }) => {
+  const getColor = (name) => {
+    if (name === "Active Ads") return "#FFD700";
+    if (name === "Views") return "#90EE90";
+    if (name === "Messages") return "#ADD8E6";
+    if (name === "Leads") return "#FFB6C1";
+    return "#1976d2";
+  };
+
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <BarChart data={data} margin={{ top: 12, right: 12, bottom: 6, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+        <YAxis />
+        <RechartsTooltip />
+        <Legend verticalAlign="top" />
+        <Bar dataKey="value" name="Count">
+          {data.map((entry) => (
+            <Cell key={entry.name} fill={getColor(entry.name)} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+};
+
+export default function SellerDashboard() {
   const theme = useTheme();
+  const isSm = useMediaQuery(theme.breakpoints.down("sm"));
+  const isMd = useMediaQuery(theme.breakpoints.down("md"));
   const navigate = useNavigate();
 
   const {
     user,
     stats = {},
     my_ads = [],
-    performance_insights = {},
     messages = [],
     orders = [],
     earnings_total,
@@ -55,14 +165,12 @@ export default function SellerDashboard(){
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
 
-  // helper: open chat drawer and set chat id (chat_id should come from messages.chat_id)
   const openChat = (chatId) => {
     setActiveChatId(chatId);
     setDrawerOpen(true);
     setReplyText("");
   };
 
-  // quick send using Fetch API 
   const sendQuickReply = async (chatId) => {
     if (!replyText.trim()) return;
     setSending(true);
@@ -70,14 +178,15 @@ export default function SellerDashboard(){
       const res = await fetch(`${API_BASE_URL}/api/messages/send/`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ text: replyText, chat_id: chatId, sender_id: userId }),
       });
       if (!res.ok) {
-        // optionally show toast/snackbar
         console.error("Failed to send message", await res.text());
       } else {
-        // optimistic UX: clear reply and optionally refetch messages in parent context
         setReplyText("");
       }
     } catch (err) {
@@ -87,17 +196,15 @@ export default function SellerDashboard(){
     }
   };
 
-
-  // ad action handlers
   const onEditAd = (adId, catName) => navigate(`/sellers/edit/${adId}/${encodeURIComponent(catName)}/ads`);
-  
+
   const onDeleteAd = async (adId) => {
     if (!window.confirm("Delete this ad? This action cannot be undone.")) return;
     try {
       const resp = await fetch(`${API_BASE_URL}/api/seller/delete/ads/${adId}/`, {
         method: "DELETE",
         credentials: "include",
-        headers:{Authorization: `Bearer ${token}`},
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (resp.ok) {
         window.location.reload();
@@ -109,323 +216,219 @@ export default function SellerDashboard(){
     }
   };
 
-const StatCard = ({ title, value, onClick, bgColor, width }) => (
-  <Card
-    onClick={onClick}
-    sx={{
-      width: width || 120,          // smaller width
-      minHeight: 100,               // optional for consistent height
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "center",
-      alignItems: "center",         // center horizontally
-      p: 2,
-      textAlign: "center",
-      gap: 1,                       // small spacing between title and value
-      borderRadius: 2,
-      boxShadow: 3,
-      cursor: onClick ? "pointer" : "default",
-      backgroundColor: bgColor || "#fff",
-      transition: "transform 0.2s",
-      "&:hover": { transform: "scale(1.05)" }, // subtle hover effect
-    }}
-  >
-    <Typography variant="subtitle2" color="text.secondary">
-      {title}
-    </Typography>
-    <Typography variant="h4" sx={{ fontWeight: 700 }}>
-      {value ?? 0}
-    </Typography>
-  </Card>
-);
-
-
-
-const StatsBarChart = ({ data }) => {
-  return (
-    <ResponsiveContainer width="100%" height={250}>
-      <BarChart data={data} margin={{ top: 20, right: 20, left: 0, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" />
-        <XAxis dataKey="name" />
-        <YAxis />
-        <Tooltip />
-        <Bar
-  dataKey="value"
-  fill="#1976d2" // fallback
-  >
-  {data.map((entry) => {
-    let color = "#1976d2"; // default
-    if (entry.name === "Active Ads") color = "#FFD700";
-    else if (entry.name === "Views") color = "#90EE90";
-    else if (entry.name === "Messages") color = "#ADD8E6";
-    else if (entry.name === "Leads") color = "#FFB6C1";
-    return <Cell key={entry.name} fill={color} />;
-  })}
-</Bar>
-      </BarChart>
-    </ResponsiveContainer>
+  const chartData = useMemo(
+    () => [
+      { name: "Active Ads", value: stats.total_active_ads || 0 },
+      { name: "Views", value: stats.total_views_this_month || 0 },
+      { name: "Messages", value: stats.messages_count || 0 },
+      { name: "Leads", value: stats.total_leads || 0 },
+    ],
+    [stats]
   );
-};
-
-const chartData = [
-  { name: "Active Ads", value: stats.total_active_ads || 0 },
-  { name: "Views", value: stats.total_views_this_month || 0 },
-  { name: "Messages", value: stats.messages_count || 0 },
-  { name: "Leads", value: stats.total_leads || 0 },
-];
-
 
   return (
     <>
       {/* Header */}
-      <Box display="flex" alignItems="center" justifyContent="space-between" mb={2} flexWrap="wrap" gap={2}>
-        <Box display="flex" alignItems="center" gap={2}>
-          <Avatar src={user?.avatar || user?.avatar_url} sx={{ width: 64, height: 64 }} />
+      <Box display="flex" flexDirection={isSm ? "column" : "row"} alignItems="center" justifyContent="space-between" gap={2} mb={2}>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <Avatar src={user?.avatar || userAvatar} sx={{ width: 64, height: 64 }} />
           <Box>
-            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Welcome back, {firstName || "Seller"}
+            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+              Welcome back, {firstName || user?.first_name || "Seller"}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Manage your listings, respond to buyers and track performance.
+              Manage listings, respond to buyers, and track performance — quick overview below.
             </Typography>
           </Box>
-        </Box>
+        </Stack>
 
         <Stack direction="row" spacing={1}>
-          <Button
-            startIcon={<AddCircleOutlineIcon />}
-            variant="contained"
-            onClick={() => navigate("/sellers/categories")}
-          >
-            Post New Ad
-          </Button>
           <Button variant="outlined" onClick={() => setDrawerOpen(true)} startIcon={<ChatIcon />}>
             Messages
           </Button>
-          <Button variant="outlined" onClick={() => navigate("/sellers/analytics")}>
-          Analytics
+          <Button variant="outlined" startIcon={<VisibilityIcon />} onClick={() => navigate("/sellers/analytics")}>
+            Analytics
           </Button>
         </Stack>
       </Box>
 
-      <Divider sx={{ borderColor: "#e0e7ef", mb: 3 }} />
+      <Divider sx={{ borderColor: "#0c0d0eff", mb: 2 }} />
 
-   
-   <Grid container spacing={4}>
-  {/* First row */}
-  <Grid item xs={12} sm={6}>
-    <StatCard
-      title="Active Ads"
-      value={stats.total_active_ads}
-      cta="View Ads"
-      bgColor="#FFD700" // gold
-      onClick={() => navigate("/sellers/ads/list")}
-    />
-  </Grid>
-  <Grid item xs={12} sm={6}>
-    <StatCard
-      title="Views (this month)"
-      value={stats.total_views_this_month}
-      cta="View analytics"
-      bgColor="#90EE90" // light green
-      onClick={() => navigate("/sellers/analytics")}
-    />
-  </Grid>
+      {/* Summary stat cards */}
+      <Grid container spacing={2} sx={{ mb: 2 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatCard title="Active Ads" value={stats.total_active_ads} onClick={() => navigate("/sellers/ads/list")} color="#FFD700" cta="View ads" />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatCard title="Views (this month)" value={stats.total_views_this_month} onClick={() => navigate("/sellers/analytics")} color="#90EE90" cta="Analytics" />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatCard title="Messages" value={stats.messages_count} onClick={() => setDrawerOpen(true)} color="#ADD8E6" cta="Open messages" />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatCard title="Leads" value={stats.total_leads} onClick={() => navigate("/sellers/orders")} color="#FFB6C1" cta="View leads" />
+        </Grid>
+      </Grid>
 
-  {/* Second row */}
-  <Grid item xs={12} sm={6}>
-    <StatCard
-      title="Messages"
-      value={stats.messages_count}
-      cta="Open messages"
-      bgColor="#ADD8E6" // light blue
-      onClick={() => setDrawerOpen(true)}
-    />
-  </Grid>
-  <Grid item xs={12} sm={6} >
-    <StatCard
-      title="Leads"
-      value={stats.total_leads}
-      cta="View leads"
-      bgColor="#FFB6C1" 
-      onClick={() => navigate("/sellers/leads")}
-    />
-  </Grid>
-</Grid>
-
-{/* Main content: My Ads + Messages */}
-<Grid container spacing={2} mt={5}>
-  {/* My Ads */}
-  <Grid item xs={12} md={7}>
-    <Paper sx={{ p: 2, borderRadius: 2, bgcolor: "#f5f5f5" }}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-        <Typography variant="h6">My Ads</Typography>
-        <Button size="small" onClick={() => navigate("/sellers/ads/list")}>
-          View all
-        </Button>
-      </Box>
-
+      {/* Main content */}
       <Grid container spacing={2}>
-        {my_ads.length === 0 ? (
-          <Grid item xs={12}>
-            <Typography color="text.secondary">You have no active ads — post one now.</Typography>
-          </Grid>
-        ) : (
-          my_ads.slice(0, 8).map((ad) => (
-            <Grid item xs={12} sm={6} key={ad.id}>
-              <Card
-                sx={{
-                  display: "flex",
-                  height: "100%",
-                  borderRadius: 2,
-                  overflow: "hidden",
-                  transition: "transform 0.2s",
-                  "&:hover": { transform: "scale(1.02)", boxShadow: 6 },
-                  bgcolor: "#fffbe6"
-                }}
-              >
-                {ad.header_image_url ? (
-                  <CardMedia
-                    component="img"
-                    image={ad.header_image_url}
-                    alt={ad.title}
-                    sx={{ width: 140, objectFit: "cover" }}
-                  />
-                ) : (
-                  <Box sx={{ width: 140, bgcolor: "grey.100" }} />
-                )}
-                <Box sx={{ flex: 1 }}>
-                  <CardContent sx={{ py: 1 }}>
-                    <Typography variant="subtitle1" noWrap>
-                      {ad.title}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {ad.currency ? `${ad.currency} ` : "$"}{ad.price ?? ""}
-                    </Typography>
-                    <Stack direction="row" spacing={1} mt={1} alignItems="center">
-                      <Chip label={ad.status} size="small" color="primary" />
-                      <Typography variant="caption" color="text.secondary">
-                        {ad.view_count ?? 0} views
-                      </Typography>
-                    </Stack>
-                  </CardContent>
-                  <Box sx={{ display: "flex", gap: 1, p: 1 }}>
-                    <Button size="small" startIcon={<EditIcon />} onClick={() => onEditAd(ad.id,ad.catName)}>Edit</Button>
-                    <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => onDeleteAd(ad.id)}>Delete</Button>
-                    <Button size="small" onClick={() => navigate(`sellers/ads/${ad.id}/details`)}>View</Button>
-                  </Box>
-                </Box>
-              </Card>
+        {/* Left: My Ads */}
+        <Grid item xs={12} lg={7}>
+          <Section title="My Ads" color={COLORS[0]} actions={<Button size="small" onClick={() => navigate("/sellers/ads/list")}>View all</Button>} role="region">
+            <Grid container spacing={2}>
+              {my_ads.length === 0 ? (
+                <Grid item xs={12}>
+                  <Typography color="text.secondary">You have no active ads — post one now.</Typography>
+                </Grid>
+              ) : (
+                my_ads.slice(0, 8).map((ad) => (
+                  <Grid item xs={12} sm={6} key={ad.id}>
+                    <Card
+                      sx={{
+                        display: "flex",
+                        height: "100%",
+                        borderRadius: 2,
+                        overflow: "hidden",
+                        transition: "transform 0.12s ease, box-shadow 0.12s ease",
+                        "&:hover": { transform: "translateY(-4px)", boxShadow: 6 },
+                        backgroundColor: "#fff",
+                      }}
+                    >
+                      {ad.header_image_url ? (
+                        <CardMedia component="img" image={ad.header_image_url} alt={ad.title} sx={{ width: 140, objectFit: "cover" }} />
+                      ) : (
+                        <Box sx={{ width: 140, bgcolor: "grey.100" }} />
+                      )}
+
+                      <Box sx={{ flex: 1 }}>
+                        <CardContent sx={{ py: 1 }}>
+                          <Typography variant="subtitle1" noWrap sx={{ fontWeight: 700 }}>
+                            {ad.title}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {ad.currency ? `${ad.currency} ` : "$"}
+                            {ad.price ?? ""}
+                          </Typography>
+                          <Stack direction="row" spacing={1} mt={1} alignItems="center">
+                            <Chip label={ad.status || "status"} size="small" />
+                            <Typography variant="caption" color="text.secondary">
+                              {ad.view_count ?? 0} views
+                            </Typography>
+                          </Stack>
+                        </CardContent>
+
+                        <Box sx={{ display: "flex", gap: 1, p: 1, pt: 0 }}>
+                          <Button size="small" startIcon={<EditIcon />} onClick={() => onEditAd(ad.id, ad.catName)}>
+                            Edit
+                          </Button>
+                          <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => onDeleteAd(ad.id)}>
+                            Delete
+                          </Button>
+                          <Button size="small" onClick={() => navigate(`/sellers/ads/${ad.id}/details`)}>
+                            View
+                          </Button>
+                        </Box>
+                      </Box>
+                    </Card>
+                  </Grid>
+                ))
+              )}
             </Grid>
-          ))
-        )}
+          </Section>
+        </Grid>
+
+        {/* Right: Recent Inquiries + orders preview */}
+        <Grid item xs={12} lg={5}>
+          <Stack spacing={2}>
+            <Section title="Recent Inquiries" color={COLORS[1]} actions={<Button size="small" onClick={() => navigate("/sellers/messages")}>See all</Button>}>
+              <List sx={{ p: 0 }}>
+                {messages.length === 0 ? (
+                  <Typography color="text.secondary">No buyer messages yet.</Typography>
+                ) : (
+                  messages.slice(0, 6).map((m) => (
+                    <ListItem
+                      key={m.id}
+                      sx={{
+                        borderRadius: 1,
+                        mb: 1,
+                        bgcolor: "#ffffff",
+                        "&:hover": { bgcolor: "#eef9f3" },
+                        cursor: "pointer",
+                      }}
+                    >
+                      <ListItemAvatar>
+                        <Avatar src={m.sender_avatar || undefined}>{m.sender_username?.[0]}</Avatar>
+                      </ListItemAvatar>
+                      <ListItemText
+                        primary={<Typography sx={{ fontWeight: 700 }}>{m.sender_username || "Buyer"}</Typography>}
+                        secondary={
+                          <>
+                            <Typography component="span" variant="body2" color="text.primary" noWrap>
+                              {m.text}
+                            </Typography>
+                            <Typography component="div" variant="caption" color="text.secondary">
+                              {m.ad_title ? ` — ${m.ad_title}` : ""} <span style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString()}</span>
+                            </Typography>
+                          </>
+                        }
+                      />
+                      <Box>
+                        <Tooltip title="Open chat">
+                          <IconButton size="small" onClick={() => openChat(m.chat_id || m.chat)}>
+                            <ChatIcon />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    </ListItem>
+                  ))
+                )}
+              </List>
+            </Section>
+
+            <Section title="Recent Orders" color={COLORS[2]} actions={<Button size="small" onClick={() => navigate("/sellers/orders")}>View all</Button>}>
+              {orders.length === 0 ? (
+                <Typography color="text.secondary">No recent orders.</Typography>
+              ) : (
+                <Grid container spacing={1}>
+                  {orders.slice(0, 6).map((o) => (
+                    <Grid item xs={12} sm={6} key={o.id}>
+                      <Paper
+                        sx={{
+                          p: 1,
+                          borderRadius: 1.5,
+                          bgcolor: "#fff",
+                          "&:hover": { boxShadow: 6, bgcolor: "#fff7e6" },
+                          transition: "all 0.12s",
+                        }}
+                      >
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                          Order #{o.id}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {o.status} • {formatCurrency(o.total)}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {new Date(o.created_at).toLocaleDateString()}
+                        </Typography>
+                      </Paper>
+                    </Grid>
+                  ))}
+                </Grid>
+              )}
+            </Section>
+          </Stack>
+        </Grid>
       </Grid>
-    </Paper>
-  </Grid>
 
-  {/* Recent Inquiries */}
-  <Grid item xs={12} md={5}>
-    <Paper sx={{ p: 2, borderRadius: 2, bgcolor: "#e8f4ff" }}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-        <Typography variant="h6">Recent Inquiries</Typography>
-        <Button size="small" onClick={() => navigate("/sellers/messages")}>See all</Button>
-      </Box>
+      {/* Small spacer */}
+      <Box mt={3} />
 
-      <List dense>
-        {messages.length === 0 ? (
-          <Typography color="text.secondary">No buyer messages yet.</Typography>
-        ) : (
-          messages.slice(0, 6).map((m) => (
-            <React.Fragment key={m.id}>
-              <ListItem
-                secondaryAction={
-                  <Tooltip title="Open chat">
-                    <IconButton edge="end" size="small" onClick={() => openChat(m.chat_id || m.chat)}>
-                      <ChatIcon />
-                    </IconButton>
-                  </Tooltip>
-                }
-                sx={{
-                  borderRadius: 1,
-                  mb: 1,
-                  bgcolor: "#ffffff",
-                  "&:hover": { bgcolor: "#dbeeff" }
-                }}
-              >
-                <ListItemAvatar>
-                  <Avatar src={m.sender_avatar || undefined}>{m.sender_username?.[0]}</Avatar>
-                </ListItemAvatar>
-                <ListItemText
-                  primary={m.sender_username || "Buyer"}
-                  secondary={
-                    <>
-                      <Typography component="span" variant="body2" color="text.primary" noWrap>
-                        {m.text}
-                      </Typography>
-                      <Typography component="div" variant="caption" color="text.secondary">
-                        {m.ad_title ? ` — ${m.ad_title}` : ""}{" "}
-                        <span style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString()}</span>
-                      </Typography>
-                    </>
-                  }
-                />
-              </ListItem>
-            </React.Fragment>
-          ))
-        )}
-      </List>
-    </Paper>
-  </Grid>
-</Grid>
+      {/* Overview chart */}
+      <Section title="Dashboard Overview" color={COLORS[3]} sx={{ mb: 2 }}>
+        <StatsBarChart data={chartData} />
+      </Section>
 
-{/* Orders summary */}
-<Box mt={5}>
-  <Paper sx={{ p: 2, borderRadius: 2, bgcolor: "#fff4e6" }}>
-    <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
-      <Typography variant="h6">Recent Orders</Typography>
-      <Button size="small" onClick={() => navigate("/sellers/orders")}>View all</Button>
-    </Box>
-
-    {orders.length === 0 ? (
-      <Typography color="text.secondary">No recent orders.</Typography>
-    ) : (
-      <Grid container spacing={1}>
-        {orders.slice(0, 5).map((o) => (
-          <Grid item xs={12} sm={6} md={3} key={o.id}>
-            <Paper
-              sx={{
-                p: 1,
-                borderRadius: 2,
-                bgcolor: "#fff",
-                "&:hover": { boxShadow: 6, bgcolor: "#fff7e6" },
-                transition: "all 0.2s"
-              }}
-            >
-              <Typography variant="subtitle2">Order #{o.id}</Typography>
-              <Typography variant="body2" color="text.secondary">{o.status} • {o.total}</Typography>
-              <Typography variant="caption" color="text.secondary">{new Date(o.created_at).toLocaleDateString()}</Typography>
-            </Paper>
-          </Grid>
-        ))}
-      </Grid>
-    )}
-  </Paper>
-</Box>
-
-
-  <Divider sx={{ borderColor: "#e0e7ef", mb: 3 }} />
-    <Divider sx={{ borderColor: "#e0e7ef", mb: 3 }} />
-<Box mt={4} mb={4}>
-  <Paper sx={{ p: 2, borderRadius: 2 }}>
-    <Typography variant="h6" mb={2}>
-      Dashboard Overview
-    </Typography>
-    <StatsBarChart data={chartData} />
-  </Paper>
-</Box>
-
-
-      {/* Floating chat button */}
+      {/* Floating chat FAB */}
       <Box
         sx={{
           position: "fixed",
@@ -444,23 +447,23 @@ const chartData = [
               boxShadow: 3,
             }}
             size="large"
+            aria-label="open chat"
           >
             <ChatIcon />
           </IconButton>
         </Tooltip>
       </Box>
 
-
-
       {/* Chat Drawer */}
-      <Drawer anchor="right" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <Box sx={{ width: 380, p: 2 }}>
+      <Drawer anchor="right" open={drawerOpen} onClose={() => setDrawerOpen(false)} PaperProps={{ sx: { width: isSm ? "100%" : 420 } }}>
+        <Box sx={{ p: 2 }} role="dialog" aria-label="messages drawer">
           <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
             <Typography variant="h6">Messages</Typography>
-            <Button size="small" onClick={() => navigate("/sellers/messages")}>All</Button>
+            <Button size="small" onClick={() => navigate("/sellers/messages")}>
+              All
+            </Button>
           </Box>
 
-          {/* If activeChatId is set show quick reply panel */}
           {activeChatId ? (
             <>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -471,15 +474,12 @@ const chartData = [
                 onChange={(e) => setReplyText(e.target.value)}
                 placeholder="Write a quick message..."
                 multiline
-                minRows={2}
+                minRows={3}
                 fullWidth
+                aria-label="quick reply"
               />
               <Stack direction="row" spacing={1} mt={1}>
-                <Button
-                  variant="contained"
-                  onClick={() => sendQuickReply(activeChatId)}
-                  disabled={sending}
-                >
+                <Button variant="contained" onClick={() => sendQuickReply(activeChatId)} disabled={sending}>
                   Send
                 </Button>
                 <Button onClick={() => { setActiveChatId(null); setReplyText(""); }}>Close</Button>
@@ -492,7 +492,7 @@ const chartData = [
               </Typography>
               <List>
                 {(messages || []).slice(0, 20).map((m) => (
-                  <ListItem key={m.id} button onClick={() => openChat(m.chat_id || m.chat || m.chat_id)}>
+                  <ListItem button key={m.id} onClick={() => openChat(m.chat_id || m.chat)}>
                     <ListItemAvatar>
                       <Avatar>{m.sender_username?.[0]}</Avatar>
                     </ListItemAvatar>
@@ -500,7 +500,9 @@ const chartData = [
                       primary={m.sender_username}
                       secondary={
                         <>
-                          <Typography noWrap variant="body2" color="text.primary">{m.text}</Typography>
+                          <Typography noWrap variant="body2" color="text.primary">
+                            {m.text}
+                          </Typography>
                           <Typography variant="caption" color="text.secondary">
                             {m.ad_title ? `— ${m.ad_title} • ` : ""}
                             {new Date(m.created_at).toLocaleString()}

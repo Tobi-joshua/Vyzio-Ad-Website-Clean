@@ -14,6 +14,7 @@ import logging
 import stripe
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from django.db.models import DecimalField
 from functools import wraps
 import requests
 from django.db.models.functions import TruncMonth, TruncDay, Coalesce
@@ -2177,3 +2178,22 @@ def seller_analytics(request):
     }
 
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def seller_account_settings(request):
+    user = request.user
+    if not user.is_seller:
+        return Response({'detail': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+    
+    if request.method == 'GET':
+        serializer = UserAccountSerializer(user)
+        return Response(serializer.data)
+    
+    elif request.method == 'PUT':
+        serializer = UserAccountSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

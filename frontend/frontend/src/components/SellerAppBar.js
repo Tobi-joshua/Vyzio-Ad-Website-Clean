@@ -266,7 +266,7 @@ export default function BuyerAppBar({
 
 <Divider sx={{ my: 1 }} />
 
-                <ListItemButton onClick={() => { navigate('/buyers/account-settings'); setIsDrawerOpen(false); }}>
+                <ListItemButton onClick={() => { navigate('/sellers/account-settings'); setIsDrawerOpen(false); }}>
                   <ListItemIcon><SettingsIcon /></ListItemIcon>
                   <ListItemText primary="Account Settings" />
                 </ListItemButton>

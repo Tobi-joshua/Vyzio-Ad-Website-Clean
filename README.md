@@ -1,5 +1,7 @@
 # Vyzio.com
 
+![Vyzio.com Demo](demo/site.png)
+
 ## Objective of the Project
 
 The main objective of the Vyzio.com project is to build a modern, intuitive, and accessible web platform that allows users to post and browse ads related to:

@@ -87,6 +87,7 @@ urlpatterns = [
     path('seller/<int:seller_id>/notifications/', views.seller_notifications_list),
     path('seller/notifications/<int:notif_id>/mark-read/', views.mark_seller_notification_read),
     path('seller/analytics/', views.seller_analytics, name='seller-analytics'),
+    path('seller/account-settings/', views.seller_account_settings, name='seller-account-settings'),
 
 
 

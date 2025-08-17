@@ -107,11 +107,11 @@ export default function SellersPagesWrapper() {
   const earnings_total = dashboardData?.earnings_total ?? null;
 
   // Background gradient based on theme mode
-  const pageBg = () => {
+ const pageBg = () => {
     const mode = theme.palette.mode || "light";
     return mode === "dark"
       ? "linear-gradient(180deg,#071120 0%, #0b1724 100%)"
-      : "linear-gradient(180deg,#f6f9fc 0%, #ffffffff 100%)";
+      : "linear-gradient(180deg,#f6f9fc 0%, #e3e3e4ff 100%)";
   };
 
   if (loading || authLoading) {
