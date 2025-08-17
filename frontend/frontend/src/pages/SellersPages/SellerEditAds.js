@@ -1,14 +1,16 @@
-import React, { useState, useContext, useEffect, useCallback } from "react";
+import React, { useState, useContext, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Box, Typography, TextField, Button, CircularProgress,
   Stack, Alert, InputAdornment, Avatar, IconButton, Grid,
   Dialog, DialogTitle, DialogContent, DialogActions,
-  MenuItem, FormControl, InputLabel, Select, LinearProgress
+  MenuItem, FormControl, InputLabel, Select, LinearProgress, Divider
 } from "@mui/material";
 import AddPhotoIcon from "@mui/icons-material/AddPhotoAlternate";
 import DeleteIcon from "@mui/icons-material/Delete";
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import { loadStripe } from "@stripe/stripe-js";
+import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { API_BASE_URL } from "../../constants";
 import { SellerDashboardContext } from "./index";
 import { useWebToast } from '../../hooks/useWebToast';
@@ -87,6 +89,10 @@ export default function SellerEditAdFormTwoStep() {
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [successIsActive, setSuccessIsActive] = useState(false);
+
+  // redirect-confirm handling
+  const [redirectConfirming, setRedirectConfirming] = useState(false);
+  const [redirectConfirmError, setRedirectConfirmError] = useState(null);
 
   // fetch ad and populate form
   useEffect(() => {
@@ -196,35 +202,43 @@ export default function SellerEditAdFormTwoStep() {
   };
 
   // -------- metadata update (PATCH) --------
-  const saveMetadata = async () => {
-    setError(""); setSaving(true);
-    try {
-      const payload = { title, description, city, price: price || "0", currency };
-      const res = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/`, {
-        method: "PATCH",
-        headers: getJsonHeaders(),
-        credentials: "include",
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || err.error || "Failed updating ad metadata");
-      }
-      const data = await res.json();
-      // our views return { ad: ... } or plain ad — handle both
-      const ad = data.ad || data;
-      setAdData(ad);
-      showToast({ message: "Ad updated — proceed to images", severity: "success" });
-      setStep(2);
-      return ad;
-    } catch (err) {
-      setError(err.message || "Unknown error updating ad");
-      throw err;
-    } finally {
-      setSaving(false);
-    }
-  };
+const saveMetadata = async () => {
+  setError(""); setSaving(true);
+  try {
+    const fd = new FormData();
+    fd.append("title", title);
+    fd.append("description", description);
+    fd.append("city", city);
+    fd.append("price", price || "0");
+    fd.append("currency", currency);
+    fd.append("category_name", catName);
 
+    const res = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/`, {
+      method: "PATCH",
+      headers: getAuthHeaders(), 
+      body: fd,
+      credentials: "include",
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || err.error || "Failed updating ad metadata");
+    }
+    const data = await res.json();
+    const ad = data.ad || data;
+    setAdData(ad);
+    showToast({ message: "Ad updated — proceed to images", severity: "success" });
+    setStep(2);
+    return ad;
+  } catch (err) {
+    setError(err.message || "Unknown error updating ad");
+    throw err;
+  } finally {
+    setSaving(false);
+  }
+};
+
+  
   // -------- upload images (existing separate endpoint) --------
   const uploadImagesToAd = async (adIdArg) => {
     const adId = adIdArg || adData?.id || id;
@@ -312,9 +326,10 @@ export default function SellerEditAdFormTwoStep() {
   };
 
   // -------- create payment instance (server) --------
+  // normalize returned fields so frontend can rely on client_secret_key & publishable_key fields.
   const createPaymentInstance = async (adIdArg, methodArg) => {
     const adId = adIdArg || adData?.id || id;
-    const method = methodArg || 'stripe';
+    const method = methodArg || paymentMethod || 'stripe';
     if (!adId) throw new Error("No ad ID for payment");
     setCreatingPayment(true);
     setPaymentAdId(adId);
@@ -329,18 +344,27 @@ export default function SellerEditAdFormTwoStep() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || "Failed to create payment instance");
       }
-      const json = await res.json();
-      setPaymentDetails(json);
+      const jsonRaw = await res.json();
+
+      const normalized = {
+        ...jsonRaw,
+        client_secret_key: jsonRaw.client_secret_key || jsonRaw.client_secret || null,
+        publishable_key: jsonRaw.publishable_key || jsonRaw.publishableKey || jsonRaw.publishable || null,
+        ad_id: jsonRaw.ad_id || jsonRaw.adId || adId,
+        method: method || jsonRaw.method || jsonRaw.payment_method || null,
+      };
+
+      setPaymentDetails(normalized);
       setPaymentDialogOpen(true);
-      // optimistic: mark pending locally
+      // optimistic: mark pending locally on adData
       setAdData(prev => prev ? { ...prev, status: "pending" } : prev);
-      return json;
+      return normalized;
     } finally {
       setCreatingPayment(false);
     }
   };
 
-  // -------- confirm payment on server --------
+  // -------- confirm payment on server (generic) --------
   const confirmPaymentOnServer = async ({ payment_reference, ad_id }) => {
     const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
       method: "POST",
@@ -355,7 +379,89 @@ export default function SellerEditAdFormTwoStep() {
     return res.json();
   };
 
-  async function handleManualConfirm(reference) {
+  // specialized helpers if backend exposes separate endpoints (optional)
+  const confirmStripePaymentOnServer = async ({ payment_reference, ad_id }) => {
+    // fall back to generic confirmPaymentOnServer
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/stripe/`, {
+        method: "POST",
+        headers: getJsonHeaders(),
+        credentials: "include",
+        body: JSON.stringify({ payment_reference, ad_id }),
+      });
+      if (!r.ok) throw new Error("stripe confirm failed");
+      return r.json();
+    } catch (e) {
+      return confirmPaymentOnServer({ payment_reference, ad_id });
+    }
+  };
+
+  const confirmCryptoPaymentOnServer = async ({ payment_reference, ad_id }) => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/crypto/`, {
+        method: "POST",
+        headers: getJsonHeaders(),
+        credentials: "include",
+        body: JSON.stringify({ payment_reference, ad_id }),
+      });
+      if (!r.ok) throw new Error("crypto confirm failed");
+      return r.json();
+    } catch (e) {
+      return confirmPaymentOnServer({ payment_reference, ad_id });
+    }
+  };
+
+  // auto-handle redirect returns from Stripe (when provider redirects back to this page)
+  useEffect(() => {
+    const qp = new URLSearchParams(window.location.search);
+    const payment_reference = qp.get("payment_reference");
+    const ad_id = qp.get("ad_id");
+    // only proceed if both present
+    if (!payment_reference || !ad_id) return;
+
+    if (redirectConfirming) return;
+
+    (async () => {
+      try {
+        setRedirectConfirming(true);
+        setRedirectConfirmError(null);
+        setVerifyingPayment(true);
+        const resp = await confirmStripePaymentOnServer({ payment_reference, ad_id });
+
+        if (resp?.ad) setAdData(prev => ({ ...(prev || {}), ...(resp.ad || {}) }));
+
+        if ((resp.status ?? resp.ad?.status) === "active") {
+          setSuccessIsActive(true);
+          setSuccessMessage(resp.detail || "Payment confirmed — your ad is active.");
+        } else {
+          setSuccessIsActive(false);
+          setSuccessMessage(resp.detail || "Payment received — awaiting approval.");
+        }
+        setSuccessModalOpen(true);
+      } catch (err) {
+        console.error("Redirect confirm error:", err);
+        setRedirectConfirmError(err.message || "Payment confirmation failed on return.");
+        showToast({ message: err.message || "Failed to confirm payment after redirect", severity: "error" });
+      } finally {
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("payment_reference");
+          url.searchParams.delete("ad_id");
+          window.history.replaceState({}, document.title, url.pathname + url.search);
+        } catch (e) {
+          // ignore
+        }
+        setVerifyingPayment(false);
+        setRedirectConfirming(false);
+        // cleanup local payment UI state
+        setPaymentDialogOpen(false);
+        setPaymentDetails(null);
+        setPaymentAdId(null);
+      }
+    })();
+  }, [redirectConfirming]); // eslint-disable-line
+
+  async function handleManualConfirm(reference, method) {
     const adId = paymentAdId || adData?.id || id;
     if (!adId) {
       showToast({ message: "Missing ad id for verification", severity: "error" });
@@ -363,10 +469,17 @@ export default function SellerEditAdFormTwoStep() {
     }
     setVerifyingPayment(true);
     try {
-      const serverResp = await confirmPaymentOnServer({ payment_reference: reference, ad_id: adId });
-      if (serverResp?.ad) {
-        setAdData(prev => ({ ...(prev || {}), ...(serverResp.ad || {}) }));
+      let serverResp;
+      if (method === "stripe") {
+        serverResp = await confirmStripePaymentOnServer({ payment_reference: reference, ad_id: adId });
+      } else if (method === "crypto") {
+        serverResp = await confirmCryptoPaymentOnServer({ payment_reference: reference, ad_id: adId });
+      } else {
+        serverResp = await confirmPaymentOnServer({ payment_reference: reference, ad_id: adId });
       }
+
+      if (serverResp?.ad) setAdData(prev => ({ ...(prev || {}), ...(serverResp.ad || {}) }));
+
       setVerifyingPayment(false);
       setPaymentDialogOpen(false);
       setPaymentDetails(null);
@@ -392,7 +505,7 @@ export default function SellerEditAdFormTwoStep() {
   // Launch provider (open checkout URL if provided)
   const launchProvider = () => {
     if (!paymentDetails) return;
-    // server may provide a checkout_url for Stripe/Orange
+    // server may provide a checkout_url for Stripe/other
     if (paymentDetails.checkout_url) {
       window.open(paymentDetails.checkout_url, '_blank');
       showToast({ message: 'Payment provider opened in a new tab', severity: 'info' });
@@ -401,32 +514,66 @@ export default function SellerEditAdFormTwoStep() {
 
     // crypto flow: server may return crypto_address and amount
     if (paymentDetails.crypto_address) {
+      setPaymentDialogOpen(true);
       showToast({ message: 'Follow the displayed crypto instructions to complete payment', severity: 'info' });
+      return;
+    }
+
+    // if only client_secret exists, we want the dialog open so stripe element is visible
+    if (paymentDetails.client_secret_key) {
+      setPaymentDialogOpen(true);
       return;
     }
 
     showToast({ message: 'No external URL provided — complete payment with your provider and paste the reference to verify', severity: 'info' });
   };
 
-  // UI handlers
-  const handleMetadataSubmit = async (e) => {
-    e?.preventDefault?.();
-    try { await saveMetadata(); } catch {};
+  // helper: check whether current paymentDetails is already for this ad
+  const isPaymentInitForAd = (adId) => {
+    if (!paymentDetails) return false;
+    if (paymentAdId && Number(paymentAdId) === Number(adId)) return true;
+    if (paymentDetails.ad_id && Number(paymentDetails.ad_id) === Number(adId)) return true;
+    return false;
   };
 
-  const handleImagesSubmit = async (e) => {
-    e?.preventDefault?.();
-    try { await uploadImagesToAd(adData?.id || id); } catch {};
+  // handler for payment method changes (inside modal)
+  const handlePaymentMethodChange = async (e) => {
+    const newMethod = e.target.value;
+    setPaymentMethod(newMethod);
+    setManualReference("");
+
+    const adId = paymentAdId || adData?.id || id;
+    if (!adId) return;
+
+    if (paymentDetails && paymentDetails.method === newMethod && isPaymentInitForAd(adId)) {
+      return;
+    }
+
+    setPaymentDetails(null);
+
+    try {
+      setCreatingPayment(true);
+      const pd = await createPaymentInstance(adId, newMethod);
+      if (pd) setPaymentDetails(pd);
+      setPaymentDialogOpen(true);
+    } catch (err) {
+      console.error("Failed creating payment for method change:", err);
+      showToast({ message: err.message || "Failed to initialize payment for selected method", severity: "error" });
+    } finally {
+      setCreatingPayment(false);
+    }
   };
 
+  // handle Pay Now from step 3
   const handlePayNow = async () => {
     const adId = adData?.id || id;
     if (!adId) { showToast({ message: "No ad to pay for", severity: "error" }); return; }
 
-    // If payment already created and has a payment_reference, just re-open the dialog
-    if (paymentDetails && paymentDetails.payment_reference) {
-      setPaymentDialogOpen(true);
-      return;
+    // re-use init'd payment details if for this ad
+    if (isPaymentInitForAd(adId) && paymentDetails) {
+      if (paymentDetails.checkout_url) { launchProvider(); return; }
+      if (paymentDetails.client_secret_key) { setPaymentDialogOpen(true); return; }
+      if (paymentDetails.crypto_address) { setPaymentDialogOpen(true); return; }
     }
 
     try {
@@ -463,6 +610,82 @@ export default function SellerEditAdFormTwoStep() {
 
   const accent = "#6C5CE7";
 
+  // -------- STRIPE INTEGRATION --------
+  const stripePromise = useMemo(() => {
+    const key = paymentDetails?.publishable_key || paymentDetails?.publishableKey;
+    return key ? loadStripe(key) : null;
+  }, [paymentDetails?.publishable_key, paymentDetails?.publishableKey]);
+
+  function StripePaymentElement({ paymentReference, adId }) {
+    const stripe = useStripe();
+    const elements = useElements();
+    const [processing, setProcessing] = useState(false);
+
+    const handleConfirmInDialog = async () => {
+      if (!stripe || !elements) {
+        showToast({ message: "Stripe has not loaded yet, try again in a moment", severity: "error" });
+        return;
+      }
+      setProcessing(true);
+      try {
+        const serverPaymentReference = paymentReference || paymentDetails?.payment_reference || "";
+        const serverAdId = adId || adData?.id || "";
+        const returnUrl = `${window.location.origin}${window.location.pathname}?payment_reference=${encodeURIComponent(serverPaymentReference)}&ad_id=${encodeURIComponent(serverAdId)}`;
+
+        const result = await stripe.confirmPayment({
+          elements,
+          confirmParams: { return_url: returnUrl },
+          redirect: "if_required",
+        });
+
+        if (result.error) {
+          console.error("Stripe confirmPayment error:", result.error);
+          showToast({ message: result.error.message || "Payment failed", severity: "error" });
+          setProcessing(false);
+          return;
+        }
+
+        const paymentIntent = result.paymentIntent || null;
+        if (paymentIntent && paymentIntent.id) {
+          const serverReference = serverPaymentReference || paymentIntent.id;
+          await handleManualConfirm(serverReference, "stripe");
+        } else {
+          // redirect flow — handled by useEffect on return
+        }
+      } catch (err) {
+        console.error("Stripe confirm error:", err);
+        showToast({ message: err.message || "Error confirming payment", severity: "error" });
+      } finally {
+        setProcessing(false);
+      }
+    };
+
+    return (
+      <Box sx={{ mt: 1 }}>
+        <Typography variant="caption" display="block" sx={{ mb: 1 }}>
+          Enter your payment details below and confirm to complete payment.
+        </Typography>
+        <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, p: 2 }}>
+          <PaymentElement />
+        </Box>
+
+        <Stack direction="row" spacing={1} sx={{ mt: 2 }} justifyContent="flex-end">
+          <Button variant="text" onClick={() => { setPaymentDialogOpen(false); }}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleConfirmInDialog}
+            disabled={!stripe || !elements || processing}
+            sx={{ bgcolor: accent }}
+          >
+            {processing ? <CircularProgress size={18} color="inherit" /> : "Confirm payment"}
+          </Button>
+        </Stack>
+      </Box>
+    );
+  }
+
   if (loading) return (
     <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
       <CircularProgress />
@@ -483,7 +706,7 @@ export default function SellerEditAdFormTwoStep() {
       </Stack>
 
       {step === 1 && (
-        <form onSubmit={handleMetadataSubmit}>
+        <form onSubmit={(e) => { e.preventDefault(); saveMetadata(); }}>
           <TextField label="Title" fullWidth value={title} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} required />
           <TextField label="Description" multiline rows={6} fullWidth value={description} onChange={(e) => setDescription(e.target.value)} sx={{ mb: 2 }} required />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
@@ -517,7 +740,7 @@ export default function SellerEditAdFormTwoStep() {
       )}
 
       {step === 2 && (
-        <form onSubmit={handleImagesSubmit}>
+        <form onSubmit={(e) => { e.preventDefault(); uploadImagesToAd(adData?.id || id); }}>
           <Box sx={{ mb: 2 }}>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>Header image (single)</Typography>
             <label htmlFor="header-image-input">
@@ -631,7 +854,7 @@ export default function SellerEditAdFormTwoStep() {
       )}
 
       {/* Payment dialog */}
-      <Dialog open={paymentDialogOpen} onClose={() => setPaymentDialogOpen(false)}>
+      <Dialog open={paymentDialogOpen} onClose={() => { setPaymentDialogOpen(false); setPaymentDetails(null); setPaymentAdId(null); }} maxWidth="sm" fullWidth>
         <DialogTitle>Pay to publish your ad</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 1 }}>
@@ -644,7 +867,7 @@ export default function SellerEditAdFormTwoStep() {
               labelId="payment-method-label"
               value={paymentMethod}
               label="Payment method"
-              onChange={(e) => setPaymentMethod(e.target.value)}
+              onChange={handlePaymentMethodChange}
             >
               {PAYMENT_METHODS.map(m => <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>)}
             </Select>
@@ -655,46 +878,132 @@ export default function SellerEditAdFormTwoStep() {
             <Typography variant="body2">Advertised price: {currency} {adData?.price ?? price}</Typography>
           </Box>
 
-          <Box mt={2}>
+          <Box
+            mt={2}
+            sx={{
+              p: 2,
+              border: "1px solid",
+              borderColor: "divider",
+              borderRadius: 1,
+              bgcolor: "grey.50",
+            }}
+          >
             <Typography variant="body2">Listing fee:</Typography>
+
             {paymentDetails ? (
               <Box>
-                <Typography variant="h6">{paymentDetails.currency} {paymentDetails.amount}</Typography>
+                <Typography variant="h6">
+                  {paymentDetails.currency} {paymentDetails.amount}
+                </Typography>
 
-                {/* If server gave a checkout URL (Stripe/Orange), show launch button */}
+                {/* External checkout */}
                 {paymentDetails.checkout_url && (
-                  <Button sx={{ mt: 1 }} variant="contained" onClick={launchProvider}>Open payment provider</Button>
+                  <Button sx={{ mt: 1 }} variant="contained" fullWidth onClick={launchProvider}>
+                    Open payment provider
+                  </Button>
                 )}
 
-                {/* If crypto info provided show address and copy button */}
-                {paymentDetails.crypto_address && (
-                  <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="body2">Address: {paymentDetails.crypto_address}</Typography>
-                    <IconButton size="small" onClick={() => copyToClipboard(paymentDetails.crypto_address)}><ContentCopyIcon fontSize="small" /></IconButton>
-                  </Box>
+                {/* Stripe inline element */}
+                {paymentMethod === "stripe" && paymentDetails.client_secret_key && stripePromise && (
+                  <Elements stripe={stripePromise} options={{ clientSecret: paymentDetails.client_secret_key }}>
+                    <Box sx={{ mt: 2, p: 2, border: "1px dashed", borderColor: "divider", borderRadius: 2 }}>
+                      <StripePaymentElement
+                        paymentReference={paymentDetails.payment_reference}
+                        adId={adData?.id}
+                      />
+                    </Box>
+                  </Elements>
                 )}
 
-                {/* If server returned a payment reference, show it and allow manual confirmation */}
-                {paymentDetails.payment_reference ? (
-                  <Box sx={{ mt: 1 }}>
-                    <Typography variant="body2">Reference: {paymentDetails.payment_reference}</Typography>
-                    <Button sx={{ mt: 1 }} variant="outlined" onClick={() => handleManualConfirm(paymentDetails.payment_reference)}>I have paid — Verify</Button>
+                {/* Crypto address or provider addresses */}
+                {paymentDetails.crypto_address ? (
+                  <Box sx={{ mt: 1, display: "flex", gap: 1, alignItems: "center", justifyContent: "space-between" }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle2">Send crypto to:</Typography>
+                      <Typography variant="body2" fontFamily="monospace" sx={{ overflowWrap: "anywhere" }}>
+                        {paymentDetails.crypto_address}
+                      </Typography>
+                    </Box>
+                    <IconButton
+                      size="small"
+                      onClick={() => copyToClipboard(paymentDetails.crypto_address)}
+                      aria-label="Copy crypto address"
+                    >
+                      <ContentCopyIcon fontSize="small" />
+                    </IconButton>
                   </Box>
-                ) : (
-                  <Box sx={{ mt: 1 }}>
-                    <Typography variant="caption" color="text.secondary">If your provider returns a reference after payment, paste it here to verify.</Typography>
-                    <TextField
-                      placeholder="Enter payment reference"
-                      fullWidth
-                      value={manualReference}
-                      onChange={(e) => setManualReference(e.target.value)}
-                      sx={{ mt: 1 }}
-                    />
-                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                      <Button variant="contained" onClick={() => launchProvider()}>Open provider</Button>
-                      <Button variant="outlined" onClick={() => handleManualConfirm(manualReference)} disabled={!manualReference}>Verify</Button>
-                    </Stack>
-                  </Box>
+                ) : paymentDetails.provider_payload?.addresses ? (
+                  // provider_payload.addresses is expected to be an object like { btc: "addr", eth: "addr" }
+                  Object.entries(paymentDetails.provider_payload.addresses).map(([coin, addr]) => (
+                    <Box
+                      key={coin}
+                      sx={{ mt: 1, display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                    >
+                      <Box sx={{ pr: 1 }}>
+                        <Typography variant="subtitle2">{coin.toUpperCase()}</Typography>
+                        <Typography variant="body2" fontFamily="monospace" sx={{ overflowWrap: "anywhere" }}>
+                          {addr}
+                        </Typography>
+                      </Box>
+
+                      <IconButton size="small" onClick={() => copyToClipboard(addr)} aria-label={`Copy ${coin} address`}>
+                        <ContentCopyIcon fontSize="small" />
+                      </IconButton>
+                    </Box>
+                  ))
+                ) : null}
+
+                {/* Manual reference / verify for non-Stripe providers */}
+                {paymentMethod !== "stripe" && (
+                  <>
+                    {paymentDetails.payment_reference ? (
+                      <Box sx={{ mt: 3 }}>
+                        <Typography variant="body2" fontWeight="bold">
+                          Reference: {paymentDetails.payment_reference}
+                        </Typography>
+                        <Button
+                          sx={{ mt: 2 }}
+                          fullWidth
+                          variant="outlined"
+                          onClick={() => handleManualConfirm(paymentDetails.payment_reference, paymentMethod)}
+                        >
+                          I have paid — Verify
+                        </Button>
+                      </Box>
+                    ) : (
+                      // If there's no server-side reference and no Stripe client secret, allow manual paste
+                      !paymentDetails.client_secret_key && (
+                        <Box sx={{ mt: 3 }}>
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            If your provider returns a reference after payment, paste it here to verify.
+                          </Typography>
+
+                          <TextField
+                            placeholder="Enter payment reference"
+                            fullWidth
+                            size="small"
+                            value={manualReference}
+                            onChange={(e) => setManualReference(e.target.value)}
+                            sx={{ mt: 1 }}
+                          />
+
+                          <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                            <Button variant="contained" fullWidth onClick={launchProvider}>
+                              Open provider
+                            </Button>
+                            <Button
+                              variant="outlined"
+                              fullWidth
+                              onClick={() => handleManualConfirm(manualReference, paymentMethod)}
+                              disabled={!manualReference}
+                            >
+                              Verify
+                            </Button>
+                          </Stack>
+                        </Box>
+                      )
+                    )}
+                  </>
                 )}
               </Box>
             ) : (

@@ -1251,7 +1251,7 @@ def seller_dashboard(request):
 
     # --- my ads (limit 50 for paging; you can change) ---
     # annotate each ad with a view count (from ViewHistory)
-    my_ads_qs = Ad.objects.filter(user=user).annotate(view_count=Count('viewhistory')).order_by('-created_at')[:4]
+    my_ads_qs = Ad.objects.filter(user=user,is_active=True,status='active').annotate(view_count=Count('viewhistory')).order_by('-created_at')[:4]
     my_ads = []
     for a in my_ads_qs:
         my_ads.append({
@@ -1356,15 +1356,12 @@ def seller_dashboard(request):
 
 # GET -> list ads
 @api_view(["GET"])
-def ads_list(request):
+@permission_classes([IsAuthenticated])
+def seller_ads_list(request):
+    user = request.user
     qs = Ad.objects.all().order_by("-created_at")
-    category = request.query_params.get("category")
-    user = request.query_params.get("user")
-
-    if category:
-        qs = qs.filter(category_id=category)
     if user:
-        qs = qs.filter(user_id=user)
+        qs = qs.filter(user_id=user.id)
 
     serializer = SellerAdSerializer(qs, many=True, context={"request": request})
     return Response(serializer.data)
@@ -1794,40 +1791,6 @@ def confirm_crypto_payment(request):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def delete_seller_ad(request, ad_id):
@@ -1850,7 +1813,7 @@ def validate_file(f):
 
 @api_view(["GET", "PUT", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
-@parser_classes([MultiPartParser, FormParser])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 def ads_edit_detail(request, pk):
     """
     GET: return ad detail for editing.

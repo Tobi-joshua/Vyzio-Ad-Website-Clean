@@ -217,34 +217,44 @@ export default function SellerCreateAdFormTwoStep() {
     extraPreviews.forEach(u => URL.revokeObjectURL(u));
     setHeaderImageFile(null); setExtraImages([]); setExtraPreviews([]); setAdData(null); setStep(1);
   };
+  
 
   // -------- metadata creation --------
-  const createAdMetadata = async () => {
-    setError(""); setCreating(true);
-    try {
-      const payload = { title, description, city, price: price || "0", currency };
-      const res = await fetch(`${API_BASE_URL}/api/seller/ads/create-metadata/`, {
-        method: "POST",
-        headers: getJsonHeaders(),
-        credentials: "include",
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || err.error || "Failed creating ad metadata");
-      }
-      const data = await res.json();
-      setAdData(data);
-      setStep(2);
-      showToast({ message: "Ad metadata created — proceed to upload images", severity: "success" });
-      return data;
-    } catch (err) {
-      setError(err.message || "Unknown error creating ad");
-      throw err;
-    } finally {
-      setCreating(false);
+const createAdMetadata = async () => {
+  setError(""); 
+  setCreating(true);
+  try {
+    const payload = { 
+      title, 
+      description, 
+      city, 
+      price: price || "0", 
+      currency,
+      category_name: catName  
+    };
+    const res = await fetch(`${API_BASE_URL}/api/seller/ads/create-metadata/`, {
+      method: "POST",
+      headers: getJsonHeaders(),
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || err.error || "Failed creating ad metadata");
     }
-  };
+    const data = await res.json();
+    setAdData(data);
+    setStep(2);
+    showToast({ message: "Ad metadata created — proceed to upload images", severity: "success" });
+    return data;
+  } catch (err) {
+    setError(err.message || "Unknown error creating ad");
+    throw err;
+  } finally {
+    setCreating(false);
+  }
+};
+
 
   // -------- upload images --------
   const uploadImagesToAd = async (adIdArg) => {

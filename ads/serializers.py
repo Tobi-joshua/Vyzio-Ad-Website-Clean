@@ -483,20 +483,39 @@ AdCreateSerializer
 Serializer for creating Ad instances.
 Includes fields needed when creating an ad.
 """
-
 class AdCreateSerializer(serializers.ModelSerializer):
     images = AdImageSerializer(many=True, read_only=True)
+
     class Meta:
         model = Ad
-        fields = ['id', 'user', 'category', 'title', 'description', 'city', 'price', 'currency', 'is_active', 'header_image', 'header_image_url', 'status', 'created_at', 'images']
-        read_only_fields = ['id', 'user', 'is_active', 'header_image_url', 'status', 'created_at', 'images']
+        fields = [
+            'id', 'user', 'category', 'title', 'description', 'city',
+            'price', 'currency', 'is_active', 'header_image',
+            'header_image_url', 'status', 'created_at', 'images'
+        ]
+        read_only_fields = [
+            'id', 'user', 'is_active', 'header_image_url',
+            'status', 'created_at', 'images'
+        ]
 
     def create(self, validated_data):
         request = self.context.get('request')
         if request and hasattr(request, 'user'):
             validated_data['user'] = request.user
             validated_data['status'] = 'draft'
+
+        category_name = request.data.get('category_name')
+        if category_name:
+            try:
+                category = Category.objects.get(name__iexact=category_name)
+                validated_data['category'] = category
+            except Category.DoesNotExist:
+                raise serializers.ValidationError(
+                    {"category_name": f"Category '{category_name}' not found."}
+                )
+
         return super().create(validated_data)
+
 
 
 class AdDetailSerializer(serializers.ModelSerializer):

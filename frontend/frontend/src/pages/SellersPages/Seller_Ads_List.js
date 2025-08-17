@@ -1,4 +1,3 @@
-// SellersAdsList.jsx
 import React, { useEffect, useState, useContext, useMemo } from "react";
 import {
   Box, Button, Container, Grid, Typography, Card, CardContent,
@@ -13,8 +12,8 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CategoryIcon from "@mui/icons-material/Category";
 import BookmarkBorderIcon from "@mui/icons-material/BookmarkBorder";
 import BookmarkIcon from "@mui/icons-material/Bookmark";
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { useParams, useNavigate } from "react-router-dom";
-import { usePaystackPayment } from "react-paystack";
 import DataLoader from "../../components/DataLoader";
 import { API_BASE_URL } from "../../constants";
 import { SellerDashboardContext } from "./index";
@@ -29,8 +28,7 @@ const ALL_STATUSES = ["all", "draft", "pending", "active", "paused", "sold", "ar
 const currencySymbols = { USD: "$", NGN: "₦", EUR: "€", GBP: "£" };
 
 const PAYMENT_METHODS = [
-  { value: 'paystack', label: 'Paystack' },
-  { value: 'stripe', label: 'Card (Stripe)' },
+  { value: 'stripe', label: 'Stripe' },
   { value: 'crypto', label: 'Crypto' },
 ];
 
@@ -55,7 +53,7 @@ export default function SellersAdsList() {
   const [paymentDetails, setPaymentDetails] = useState(null); // object returned by create-payment
   const [paymentAdId, setPaymentAdId] = useState(null);
   const [creatingPayment, setCreatingPayment] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState("paystack"); // default method
+  const [paymentMethod, setPaymentMethod] = useState("stripe"); // default method
   const [manualReference, setManualReference] = useState("");
 
   // verifying & success states
@@ -64,7 +62,19 @@ export default function SellersAdsList() {
   const [successMessage, setSuccessMessage] = useState("");
   const [successIsActive, setSuccessIsActive] = useState(false);
 
+  // redirect confirm states (handle provider redirect back to this page)
+  const [redirectConfirming, setRedirectConfirming] = useState(false);
+  const [redirectConfirmError, setRedirectConfirmError] = useState(null);
+
+  // --- helpers for headers ---
   function getAuthHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    const token = contextToken || localStorage.getItem("token");
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return headers;
+  }
+  function getJsonHeaders() {
+    // separate helper since some calls expect JSON content-type
     const headers = { "Content-Type": "application/json" };
     const token = contextToken || localStorage.getItem("token");
     if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -131,74 +141,190 @@ export default function SellersAdsList() {
     }
   };
 
-  // helper: whether paymentDetails belongs to this ad
-  const isPaymentInitForAd = (adId) => {
-    if (!paymentDetails) return false;
-    if (paymentAdId && Number(paymentAdId) === Number(adId)) return true;
-    if (paymentDetails.ad_id && Number(paymentDetails.ad_id) === Number(adId)) return true;
-    return false;
+  // -------- confirm payment on server (Stripe) --------
+  const confirmStripePaymentOnServer = async ({ payment_reference, ad_id }) => {
+    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/stripe/`, {
+      method: "POST",
+      headers: getJsonHeaders(),
+      credentials: "include",
+      body: JSON.stringify({ payment_reference, ad_id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to confirm Stripe payment");
+    }
+    return res.json();
   };
 
-  // -------- create payment instance
-  async function createPaymentInstance(adId, method = paymentMethod) {
-    if (!adId) throw new Error("No ad id");
+  // -------- confirm payment on server (Crypto) --------
+  const confirmCryptoPaymentOnServer = async ({ payment_reference, ad_id }) => {
+    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/crypto/`, {
+      method: "POST",
+      headers: getJsonHeaders(),
+      credentials: "include",
+      body: JSON.stringify({ payment_reference, ad_id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to confirm Crypto payment");
+    }
+    return res.json();
+  };
+
+  // automatically handle Stripe redirect returns on the same page
+  useEffect(() => {
+    const qp = new URLSearchParams(window.location.search);
+    const payment_reference = qp.get("payment_reference");
+    const ad_id = qp.get("ad_id");
+    // only proceed if both present
+    if (!payment_reference || !ad_id) return;
+    if (redirectConfirming) return;
+
+    (async () => {
+      try {
+        setRedirectConfirming(true);
+        setRedirectConfirmError(null);
+        const resp = await confirmStripePaymentOnServer({ payment_reference, ad_id });
+
+        // update the ad inside ads array if returned
+        if (resp?.ad) {
+          setAds(prev => prev.map(a => a.id === resp.ad.id ? ({ ...a, ...(resp.ad || {}) }) : a));
+        } else {
+          // fallback: refetch list
+          await fetchAds();
+        }
+
+        if ((resp.status ?? resp.ad?.status) === "active") {
+          setSuccessIsActive(true);
+          setSuccessMessage(resp.detail || "Payment confirmed — your ad is active.");
+        } else {
+          setSuccessIsActive(false);
+          setSuccessMessage(resp.detail || "Payment received — awaiting approval.");
+        }
+        setSuccessModalOpen(true);
+      } catch (err) {
+        console.error("Redirect confirm error:", err);
+        setRedirectConfirmError(err.message || "Payment confirmation failed on return.");
+        showToast({ message: err.message || "Failed to confirm payment after redirect", severity: "error" });
+      } finally {
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("payment_reference");
+          url.searchParams.delete("ad_id");
+          window.history.replaceState({}, document.title, url.pathname + url.search);
+        } catch (e) {
+          // ignore
+        }
+        setRedirectConfirming(false);
+      }
+    })();
+  }, [redirectConfirming]); // eslint-disable-line
+
+  // New: when user chooses a different payment method inside the modal/selector,
+  // create a new server payment instance for that method (so crypto_address / checkout_url appears)
+  const handlePaymentMethodChange = async (e) => {
+    const newMethod = e.target.value;
+    setPaymentMethod(newMethod);
+
+    // clear any manual ref input
+    setManualReference("");
+
+    // if there's no ad yet, nothing to create
+    const adId = paymentAdId;
+    if (!adId) return;
+
+    // if current paymentDetails already matches the chosen method and is for this ad, keep it
+    if (paymentDetails && paymentDetails.method === newMethod && isPaymentInitForAd(adId)) {
+      return;
+    }
+
+    // clear previous details to avoid showing stale info
+    setPaymentDetails(null);
+
+    try {
+      setCreatingPayment(true);
+      // create a new payment instance for the selected method
+      const pd = await createPaymentInstance(adId, newMethod);
+      if (pd) setPaymentDetails(pd);
+      setPaymentDialogOpen(true);
+    } catch (err) {
+      console.error("Failed creating payment for method change:", err);
+      showToast({ message: err.message || "Failed to initialize payment for selected method", severity: "error" });
+    } finally {
+      setCreatingPayment(false);
+    }
+  };
+
+  // -------- create payment instance (server) --------
+  // Note: we normalize returned fields so frontend can rely on client_secret_key & publishable_key fields.
+  const createPaymentInstance = async (adIdArg, method) => {
+    const adId = adIdArg || paymentAdId;
+    if (!adId) throw new Error("No ad id for payment");
     setCreatingPayment(true);
     setPaymentAdId(adId);
     try {
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/create-payment/`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: getJsonHeaders(),
         credentials: "include",
-        body: JSON.stringify({ method })
+        body: JSON.stringify({ method }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || err.error || "Failed to create payment instance");
       }
-      const json = await res.json();
-      // normalize keys similar to other component
+      const jsonRaw = await res.json();
+
       const normalized = {
-        ...json,
-        client_secret_key: json.client_secret_key || json.client_secret || null,
-        publishable_key: json.publishable_key || json.publishableKey || json.publishable || null,
-        ad_id: json.ad_id || json.adId || adId,
+        ...jsonRaw,
+        client_secret_key: jsonRaw.client_secret_key || jsonRaw.client_secret || null,
+        publishable_key: jsonRaw.publishable_key || jsonRaw.publishableKey || jsonRaw.publishable || null,
+        ad_id: jsonRaw.ad_id || jsonRaw.adId || adId,
+        method: method || jsonRaw.method || jsonRaw.payment_method || null,
       };
+
       setPaymentDetails(normalized);
       setPaymentDialogOpen(true);
-      setAds(prev => prev.map(a => a.id === adId ? { ...a, status: "pending" } : a));
+
+      // optimistic: mark pending locally inside ads
+      setAds(prev => prev.map(a => a.id === Number(adId) || a.id === adId ? ({ ...a, status: "pending" }) : a));
       return normalized;
     } finally {
       setCreatingPayment(false);
     }
-  }
+  };
 
-  // confirm payment on server (generic)
-  async function confirmPaymentOnServer({ payment_reference, ad_id }) {
-    const res = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
-      method: "POST", headers: getAuthHeaders(), credentials: "include",
-      body: JSON.stringify({ payment_reference, ad_id })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to confirm payment on server");
-    }
-    return res.json();
-  }
-
-  // manual confirm (used for crypto or when you paste reference)
   async function handleManualConfirm(reference, method) {
-    if (!paymentAdId) {
+    const adId = paymentAdId;
+    if (!adId) {
       showToast({ message: "Missing ad id for verification", severity: "error" });
       return;
     }
     setVerifyingPayment(true);
     try {
-      // If your backend separates confirm endpoints per provider, switch accordingly.
-      // Here we call generic confirm endpoint which should accept provider reference & ad id.
-      const serverResp = await confirmPaymentOnServer({ payment_reference: reference, ad_id: paymentAdId });
+      let serverResp;
+      if (method === "stripe") {
+        serverResp = await confirmStripePaymentOnServer({ payment_reference: reference, ad_id: adId });
+      } else if (method === "crypto") {
+        serverResp = await confirmCryptoPaymentOnServer({ payment_reference: reference, ad_id: adId });
+      } else {
+        // fallback generic confirm endpoint if you have one
+        const r = await fetch(`${API_BASE_URL}/api/seller/payments/confirm/`, {
+          method: "POST", headers: getJsonHeaders(), credentials: "include",
+          body: JSON.stringify({ payment_reference: reference, ad_id: adId })
+        });
+        if (!r.ok) throw new Error("Failed to confirm payment");
+        serverResp = await r.json();
+      }
 
-      // update local ad
-      setAds(prev => prev.map(a => a.id === paymentAdId ? ({ ...a, ...(serverResp.ad || {}), status: serverResp.status ?? a.status }) : a));
+      // update local ad in ads array
+      if (serverResp?.ad) {
+        setAds(prev => prev.map(a => a.id === serverResp.ad.id ? ({ ...a, ...(serverResp.ad || {}) }) : a));
+      } else {
+        // fallback: refresh list
+        await fetchAds();
+      }
+
       setVerifyingPayment(false);
       setPaymentDialogOpen(false);
       setPaymentDetails(null);
@@ -210,11 +336,11 @@ export default function SellersAdsList() {
         setSuccessMessage(serverResp.detail || "Payment confirmed — your ad is active.");
       } else {
         setSuccessIsActive(false);
-        setSuccessMessage(serverResp.detail || "Payment received. Your ad is awaiting admin approval. You will be notified by email when approved.");
+        setSuccessMessage(serverResp.detail || "Payment received. Your ad is awaiting admin approval.");
       }
       setSuccessModalOpen(true);
     } catch (err) {
-      console.error("Manual confirm error:", err);
+      console.error("Payment confirmation error:", err);
       setVerifyingPayment(false);
       setPaymentDetails(null);
       setPaymentAdId(null);
@@ -222,7 +348,7 @@ export default function SellersAdsList() {
     }
   }
 
-  // Launch provider
+  // Launch provider (checkout_url)
   const launchProvider = () => {
     if (!paymentDetails) return;
     if (paymentDetails.checkout_url) {
@@ -241,55 +367,12 @@ export default function SellersAdsList() {
     showToast({ message: "No external URL provided — use the manual reference to confirm when done", severity: "info" });
   };
 
-  // Paystack integration (keeps existing behavior)
-  const paystackConfig = paymentDetails ? {
-    publicKey: paymentDetails.public_key,
-    email: email,
-    amount: Math.round((Number(paymentDetails.amount || 0) * 100) || 0),
-    currency: paymentDetails.currency || "NGN",
-    reference: paymentDetails.payment_reference,
-  } : {};
-
-  const initializePayment = usePaystackPayment(paystackConfig);
-
-  const onPaystackSuccess = (response) => {
-    setPaymentDialogOpen(false);
-    setPaymentDetails(null);
-    setVerifyingPayment(true);
-    setCreatingPayment(false);
-    // confirm with server and update ads
-    confirmPaymentOnServer({ payment_reference: response.reference, ad_id: paymentAdId })
-      .then(serverResp => {
-        setAds(prev => prev.map(a => a.id === paymentAdId ? ({ ...a, ...(serverResp.ad || {}), status: serverResp.status ?? a.status }) : a));
-        setVerifyingPayment(false);
-        setCreatingPayment(false);
-        setPaymentDialogOpen(false);
-        setPaymentDetails(null);
-        setPaymentAdId(null);
-        const finalStatus = serverResp.status ?? serverResp.ad?.status;
-        if (finalStatus === "active") {
-          setSuccessIsActive(true);
-          setSuccessMessage(serverResp.detail || "Payment confirmed — your ad is active.");
-        } else {
-          setSuccessIsActive(false);
-          setSuccessMessage(serverResp.detail || "Payment received. Awaiting approval.");
-        }
-        setSuccessModalOpen(true);
-      })
-      .catch(err => {
-        console.error(err);
-        setVerifyingPayment(false);
-        setCreatingPayment(false);
-        showToast({ message: err.message || "Failed to confirm payment", severity: "error" });
-      });
-  };
-
-  const onPaystackClose = () => {
-    setCreatingPayment(false);
-    showToast({ message: "Payment window closed — you can complete payment later.", severity: "info" });
-    setPaymentDialogOpen(false);
-    setPaymentDetails(null);
-    setPaymentAdId(null);
+  // helper: whether paymentDetails belongs to this ad
+  const isPaymentInitForAd = (adId) => {
+    if (!paymentDetails) return false;
+    if (paymentAdId && Number(paymentAdId) === Number(adId)) return true;
+    if (paymentDetails.ad_id && Number(paymentDetails.ad_id) === Number(adId)) return true;
+    return false;
   };
 
   // Stripe: create stripePromise when publishable key provided
@@ -330,14 +413,9 @@ export default function SellersAdsList() {
         const paymentIntent = result.paymentIntent || null;
         if (paymentIntent && paymentIntent.id) {
           const serverReference = serverPaymentReference || paymentIntent.id;
-          await confirmPaymentOnServer({ payment_reference: serverReference, ad_id: serverAdId });
-          // handle server response by refetching ads
-          await fetchAds();
-          setPaymentDialogOpen(false);
-          setPaymentDetails(null);
-          setPaymentAdId(null);
+          await handleManualConfirm(serverReference, "stripe");
         } else {
-          // redirect flow handled by redirectConfirm flow on return (if you implement it)
+          // redirect flow handled by redirectConfirm effect
         }
       } catch (err) {
         console.error("Stripe confirm error:", err);
@@ -357,7 +435,9 @@ export default function SellersAdsList() {
         </Box>
 
         <Stack direction="row" spacing={1} sx={{ mt: 2 }} justifyContent="flex-end">
-          <Button variant="text" onClick={() => { setPaymentDialogOpen(false); }}>Cancel</Button>
+          <Button variant="text" onClick={() => { setPaymentDialogOpen(false); }}>
+            Cancel
+          </Button>
           <Button
             variant="contained"
             onClick={handleConfirmInDialog}
@@ -375,7 +455,6 @@ export default function SellersAdsList() {
   async function startPaymentFlow(adId) {
     try {
       setCreatingPayment(true);
-      // createPaymentInstance will set paymentDetails & open dialog
       await createPaymentInstance(adId, paymentMethod);
     } catch (err) {
       console.error(err);
@@ -389,42 +468,23 @@ export default function SellersAdsList() {
   const handleStartPaymentFlow = (e, adId) => { e.stopPropagation(); startPaymentFlow(adId); };
   const handleEdit = (e, adId, catName) => { e.stopPropagation(); navigate(`/sellers/edit/${adId}/${encodeURIComponent(catName)}/ads`); };
 
-  // handle Launch Checkout (Paystack) or generic provider
-  const handleLaunchCheckout = () => {
+  // handle Launch Checkout (open checkout_url or show dialog)
+  const handleLaunchCheckout = async () => {
     if (!paymentDetails) return;
-
-    if (paymentMethod === "paystack") {
-      try {
-        initializePayment({ onSuccess: onPaystackSuccess, onClose: onPaystackClose });
-      } catch (err) {
-        console.error("Could not initialize paystack:", err);
-        showToast({ message: "Could not initialize payment, try again later", severity: "error" });
-      }
-      return;
-    }
-
-    // For other providers:
     setCreatingPayment(true);
     try {
       if (paymentDetails.checkout_url) {
         window.open(paymentDetails.checkout_url, "_blank");
-        setCreatingPayment(false);
         return;
       }
-
       if (paymentMethod === "crypto") {
-        // show dialog with addresses & manual confirm
         setPaymentDialogOpen(true);
-        setCreatingPayment(false);
         return;
       }
-
       if (paymentMethod === "stripe" && paymentDetails.client_secret_key) {
         setPaymentDialogOpen(true);
-        setCreatingPayment(false);
         return;
       }
-
       showToast({ message: "No checkout available for selected provider", severity: "error" });
     } finally {
       setCreatingPayment(false);
@@ -500,74 +560,74 @@ export default function SellersAdsList() {
         {filteredAds.length === 0 ? (
           <Typography align="center" color="text.secondary" sx={{ mt: 6 }}>No ads found.</Typography>
         ) : (
-  <Grid container spacing={2} justifyContent="center" alignItems="stretch">
-    {filteredAds.map(ad => {
-      const { id: adId, title, header_image_url, images, category, city, price, currency, status, view_count, message_count, created_at } = ad;
-      const thumb = header_image_url || (images && images[0]?.image_url) || null;
+          <Grid container spacing={2} justifyContent="center" alignItems="stretch">
+            {filteredAds.map(ad => {
+              const { id: adId, title, header_image_url, images, category, city, price, currency, status, view_count, message_count, created_at } = ad;
+              const thumb = header_image_url || (images && images[0]?.image_url) || null;
 
-      return (
-        <Grid key={adId} item xs={12} sm={12} md={4} sx={{ display: "flex", justifyContent: "center", alignItems: "stretch" }}>
-          <Card variant="outlined" sx={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", height: 320, borderRadius: 2, overflow: "hidden", "&:hover": { boxShadow: 6 }, mx: "auto" }}>
-            {thumb ? (
-              <CardMedia component="img" image={thumb} alt={title} sx={{ height: 120, objectFit: "cover" }} />
-            ) : (
-              <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: 120, bgcolor: "grey.100" }}>
-                <Avatar sx={{ bgcolor: theme.palette.primary.main }}><CategoryIcon /></Avatar>
-              </Box>
-            )}
+              return (
+                <Grid key={adId} item xs={12} sm={12} md={4} sx={{ display: "flex", justifyContent: "center", alignItems: "stretch" }}>
+                  <Card variant="outlined" sx={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", height: 320, borderRadius: 2, overflow: "hidden", "&:hover": { boxShadow: 6 }, mx: "auto" }}>
+                    {thumb ? (
+                      <CardMedia component="img" image={thumb} alt={title} sx={{ height: 120, objectFit: "cover" }} />
+                    ) : (
+                      <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: 120, bgcolor: "grey.100" }}>
+                        <Avatar sx={{ bgcolor: theme.palette.primary.main }}><CategoryIcon /></Avatar>
+                      </Box>
+                    )}
 
-            <CardContent sx={{ py: 1.25, px: 2, flexGrow: 1 }}>
-              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5, lineHeight: 1.1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</Typography>
+                    <CardContent sx={{ py: 1.25, px: 2, flexGrow: 1 }}>
+                      <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5, lineHeight: 1.1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</Typography>
 
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>{category?.name || "Uncategorized"} • {city || "—"}</Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>{category?.name || "Uncategorized"} • {city || "—"}</Typography>
 
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>{currencySymbols[currency] || currency} {price}</Typography>
-                <Chip label={status?.charAt(0)?.toUpperCase() + status?.slice(1)} color={STATUS_COLORS[status] || "default"} size="small" />
-              </Stack>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 700 }}>{currencySymbols[currency] || currency} {price}</Typography>
+                        <Chip label={status?.charAt(0)?.toUpperCase() + status?.slice(1)} color={STATUS_COLORS[status] || "default"} size="small" />
+                      </Stack>
 
-              <Stack direction="row" spacing={1} alignItems="center">
-                <Box component="span" sx={{ px: 1.5, py: 0.5, borderRadius: '16px', bgcolor: 'primary.light', color: 'primary.contrastText', fontSize: '0.75rem', fontWeight: 500 }}>Views: {view_count ?? 0}</Box>
-                <Box component="span" sx={{ px: 1.5, py: 0.5, borderRadius: '16px', bgcolor: 'secondary.light', color: 'secondary.contrastText', fontSize: '0.75rem', fontWeight: 500 }}>Msgs: {message_count ?? 0}</Box>
-                <Box component="span" sx={{ px: 1.5, py: 0.5, borderRadius: '16px', bgcolor: 'success.light', color: 'success.contrastText', fontSize: '0.75rem', fontWeight: 500 }}>Posted: {new Date(created_at).toLocaleDateString()}</Box>
-              </Stack>
-            </CardContent>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Box component="span" sx={{ px: 1.5, py: 0.5, borderRadius: '16px', bgcolor: 'primary.light', color: 'primary.contrastText', fontSize: '0.75rem', fontWeight: 500 }}>Views: {view_count ?? 0}</Box>
+                        <Box component="span" sx={{ px: 1.5, py: 0.5, borderRadius: '16px', bgcolor: 'secondary.light', color: 'secondary.contrastText', fontSize: '0.75rem', fontWeight: 500 }}>Msgs: {message_count ?? 0}</Box>
+                        <Box component="span" sx={{ px: 1.5, py: 0.5, borderRadius: '16px', bgcolor: 'success.light', color: 'success.contrastText', fontSize: '0.75rem', fontWeight: 500 }}>Posted: {new Date(created_at).toLocaleDateString()}</Box>
+                      </Stack>
+                    </CardContent>
 
-            <Divider />
+                    <Divider />
 
-            <CardActions sx={{ px: 1, py: 1, gap: 1, justifyContent: "space-between" }}>
-              <Box sx={{ display: "flex", gap: 1 }}>
-                <Button size="small" variant="contained" onClick={(e) => { e.stopPropagation(); navigate(`/sellers/ads/${adId}/details`); }}>View</Button>
-                <Button size="small" variant="outlined" onClick={(e) => { e.stopPropagation(); handleEdit(e, adId, category?.name); }}>Edit</Button>
+                    <CardActions sx={{ px: 1, py: 1, gap: 1, justifyContent: "space-between" }}>
+                      <Box sx={{ display: "flex", gap: 1 }}>
+                        <Button size="small" variant="contained" onClick={(e) => { e.stopPropagation(); navigate(`/sellers/ads/${adId}/details`); }}>View</Button>
+                        <Button size="small" variant="outlined" onClick={(e) => { e.stopPropagation(); handleEdit(e, adId, category?.name); }}>Edit</Button>
 
-                {status === "draft" && (
-                  <Button size="small" color="primary" variant="contained" onClick={(e) => { e.stopPropagation(); handleStartPaymentFlow(e, adId); }}>
-                    {creatingPayment && paymentAdId === adId ? <CircularProgress size={16} color="inherit" /> : "Pay"}
-                  </Button>
-                )}
+                        {status === "draft" && (
+                          <Button size="small" color="primary" variant="contained" onClick={(e) => { e.stopPropagation(); handleStartPaymentFlow(e, adId); }}>
+                            {creatingPayment && paymentAdId === adId ? <CircularProgress size={16} color="inherit" /> : "Pay"}
+                          </Button>
+                        )}
 
-                {status === "pending" && (
-                  <Button size="small" variant="outlined" color="warning" disabled>Under review</Button>
-                )}
-              </Box>
+                        {status === "pending" && (
+                          <Button size="small" variant="outlined" color="warning" disabled>Under review</Button>
+                        )}
+                      </Box>
 
-              <Tooltip title={ad.is_saved ? "Unsave" : "Save"}>
-                <span>
-                  <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleSave(e, adId); }}>
-                    {ad.is_saved ? <BookmarkIcon color="primary" /> : <BookmarkBorderIcon />}
-                  </IconButton>
-                </span>
-              </Tooltip>
-            </CardActions>
-          </Card>
-        </Grid>
-      );
-    })}
-  </Grid>
+                      <Tooltip title={ad.is_saved ? "Unsave" : "Save"}>
+                        <span>
+                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); toggleSave(e, adId); }}>
+                            {ad.is_saved ? <BookmarkIcon color="primary" /> : <BookmarkBorderIcon />}
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                    </CardActions>
+                  </Card>
+                </Grid>
+              );
+            })}
+          </Grid>
         )}
 
         {/* Payment dialog */}
-        <Dialog open={paymentDialogOpen} onClose={() => { setPaymentDialogOpen(false); setPaymentDetails(null); setPaymentAdId(null); }}>
+        <Dialog open={paymentDialogOpen} onClose={() => { setPaymentDialogOpen(false); setPaymentDetails(null); setPaymentAdId(null); }} maxWidth="sm" fullWidth>
           <DialogTitle>Pay to publish your ad</DialogTitle>
           <DialogContent>
             <Typography variant="body2" sx={{ mb: 1 }}>Pay the listing fee to activate the ad.</Typography>
@@ -581,7 +641,7 @@ export default function SellersAdsList() {
 
             <FormControl fullWidth sx={{ mb: 2 }}>
               <InputLabel id="payment-method-label">Payment method</InputLabel>
-              <Select labelId="payment-method-label" value={paymentMethod} label="Payment method" onChange={(e) => setPaymentMethod(e.target.value)}>
+              <Select labelId="payment-method-label" value={paymentMethod} label="Payment method" onChange={handlePaymentMethodChange}>
                 {PAYMENT_METHODS.map(m => <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>)}
               </Select>
             </FormControl>
@@ -601,16 +661,27 @@ export default function SellersAdsList() {
                   </Elements>
                 )}
 
+                {/* Crypto addresses with copy buttons */}
                 {paymentDetails.crypto_address ? (
-                  <Box>
-                    <Typography variant="subtitle2">Send crypto to:</Typography>
-                    <Typography variant="body2" fontFamily="monospace">{paymentDetails.crypto_address}</Typography>
+                  <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="subtitle2">Send crypto to:</Typography>
+                      <Typography variant="body2" fontFamily="monospace" sx={{ overflowWrap: 'anywhere' }}>{paymentDetails.crypto_address}</Typography>
+                    </Box>
+                    <IconButton size="small" onClick={() => { navigator.clipboard?.writeText(paymentDetails.crypto_address); showToast({ message: 'Copied to clipboard', severity: 'success' }); }} aria-label="Copy address">
+                      <ContentCopyIcon fontSize="small" />
+                    </IconButton>
                   </Box>
                 ) : paymentDetails.provider_payload?.addresses ? (
                   Object.entries(paymentDetails.provider_payload.addresses).map(([coin, addr]) => (
-                    <Box key={coin} sx={{ mt: 1 }}>
-                      <Typography variant="subtitle2">{coin.toUpperCase()}</Typography>
-                      <Typography variant="body2" fontFamily="monospace">{addr}</Typography>
+                    <Box key={coin} sx={{ mt: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <Box sx={{ mr: 1, flex: 1 }}>
+                        <Typography variant="subtitle2">{coin.toUpperCase()}</Typography>
+                        <Typography variant="body2" fontFamily="monospace" sx={{ overflowWrap: 'anywhere' }}>{addr}</Typography>
+                      </Box>
+                      <IconButton size="small" onClick={() => { navigator.clipboard?.writeText(addr); showToast({ message: `${coin.toUpperCase()} address copied`, severity: 'success' }); }} aria-label={`Copy ${coin} address`}>
+                        <ContentCopyIcon fontSize="small" />
+                      </IconButton>
                     </Box>
                   ))
                 ) : null}
