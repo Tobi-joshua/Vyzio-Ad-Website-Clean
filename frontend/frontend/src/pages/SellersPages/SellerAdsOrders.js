@@ -36,7 +36,6 @@ const statusColors = {
 export default function SellerOrders() {
   const { userId, token } = useContext(SellerDashboardContext || {});
   const showToast = useWebToast();
-
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -219,7 +218,7 @@ export default function SellerOrders() {
                       <Button
                         size="small"
                         variant="outlined"
-                        href={`/buyers/ads/${adId}/details`}
+                        href={`/sellers/ads/${adId}/details`}
                       >
                         View Ad
                       </Button>

@@ -202,8 +202,8 @@ const chartData = [
           <Button variant="outlined" onClick={() => setDrawerOpen(true)} startIcon={<ChatIcon />}>
             Messages
           </Button>
-          <Button variant="text" onClick={() => navigate("/sellers/earnings")}>
-            Earnings
+          <Button variant="outlined" onClick={() => navigate("/sellers/analytics")}>
+          Analytics
           </Button>
         </Stack>
       </Box>

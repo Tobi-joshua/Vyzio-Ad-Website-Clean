@@ -192,17 +192,17 @@ const SellerAdsDetails = () => {
           </Card>
 
           <Box sx={{ mb: 2 }}>
-            <Button variant="contained" color="primary" sx={{ mr: 1 }} onClick={() => navigate(`/seller/ads/${ad.id}/edit`)}>Edit</Button>
+            <Button variant="contained" color="primary" sx={{ mr: 1 }} onClick={() => navigate(`/sellers/edit/${ad.id}/${ad?.category?.name}/ads`)}>Edit</Button>
             <Button variant="outlined" color="error" onClick={() => {
               // keep delete hook - replace with confirmation / API call as needed
               if (window.confirm("Delete this ad? This action cannot be undone.")) {
-                fetch(`${API_BASE_URL}/seller/ads/${ad.id}/`, {
+                fetch(`${API_BASE_URL}/sellers/ads/${ad.id}/`, {
                   method: "DELETE",
                   headers: getAuthHeaders(),
                   credentials: "include"
                 })
                   .then(res => {
-                    if (res.ok) navigate("/seller/ads");
+                    if (res.ok) navigate("/sellers/ads/list");
                     else alert("Failed to delete ad");
                   })
                   .catch(err => { console.error(err); alert("Error deleting ad"); });

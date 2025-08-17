@@ -41,6 +41,12 @@ import SellerAdsDetails from './pages/SellersPages/Seller_Ads_Details';
 import SellersAdsList from './pages/SellersPages/Seller_Ads_List';
 import SellerCreateAdFormTwoStep from './pages/SellersPages/SellerEditAds';
 import SellerMessages from './pages/SellersPages/SellerMessages';
+import SellerOrders from './pages/SellersPages/SellerAdsOrders';
+import SellerNotifications from './pages/SellersPages/SellerNotificationList';
+import SellerAdsAnalytics from './pages/SellersPages/SellerAdsAnalytics';
+
+
+
 
 
 // Components
@@ -102,7 +108,9 @@ function App() {
               <Route path='ads/list' element={<SellersAdsList/>} />
               <Route path="edit/:id/:name/ads" element={<SellerCreateAdFormTwoStep/>} />
               <Route path="messages" element={<SellerMessages/>} />
-
+              <Route path="orders" element={<SellerOrders/>} />
+              <Route path="notifications-list" element={<SellerNotifications />} />
+              <Route path="analytics" element={<SellerAdsAnalytics />} />
 
 
             </Route>

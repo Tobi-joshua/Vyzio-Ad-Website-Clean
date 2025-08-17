@@ -82,8 +82,13 @@ urlpatterns = [
     path("seller/ads/<int:pk>/header/", views.ads_header_delete, name="ads-header-delete"),
     path("seller/ads/images/<int:pk>/", views.ads_image_delete, name="ads-image-delete"),
     path('seller/<int:seller_id>/chats/', views.seller_chats, name='seller_chats'),
-    path('buyer/<int:buyer_id>/orders/', views.buyer_orders, name='buyer_orders'),
     path('seller/<int:seller_id>/orders/', views.seller_orders, name='seller_orders'),
     path("seller/orders/<int:order_id>/", views.seller_order_update, name="seller-order-update"),
+    path('seller/<int:seller_id>/notifications/', views.seller_notifications_list),
+    path('seller/notifications/<int:notif_id>/mark-read/', views.mark_seller_notification_read),
+    path('seller/analytics/', views.seller_analytics, name='seller-analytics'),
+
+
+
 
 ]

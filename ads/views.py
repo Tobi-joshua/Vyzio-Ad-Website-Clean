@@ -16,10 +16,14 @@ from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
 import requests
+from django.db.models.functions import TruncMonth, TruncDay, Coalesce
+import datetime
+from collections import OrderedDict
 from django.utils.timezone import now
 from django.utils.html import strip_tags
 import unicodedata
 from decimal import Decimal, InvalidOperation
+from django.db.models import Count, Sum, Value
 
 """
 Django Core imports
@@ -1038,6 +1042,8 @@ def buyer_notifications_list(request, buyer_id):
     serializer = BuyerNotificationSerializer(notifications, many=True)
     return Response(serializer.data)
 
+
+
 @api_view(['PATCH'])
 def mark_buyer_notification_read(request, notif_id):
     try:
@@ -1047,6 +1053,7 @@ def mark_buyer_notification_read(request, notif_id):
         return Response({"detail": "Marked as read"}, status=status.HTTP_200_OK)
     except BuyerNotification.DoesNotExist:
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
 
 
 @transaction.atomic
@@ -1221,6 +1228,7 @@ def buyer_account_settings(request):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 
@@ -1976,3 +1984,196 @@ def seller_order_update(request, order_id):
         "status": order.status,
         "created_at": order.created_at.strftime("%Y-%m-%d %H:%M"),
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def seller_notifications_list(request, seller_id):
+    notifications = SellerNotification.objects.filter(seller_id=seller_id).order_by('-timestamp')
+    serializer = SellerNotificationSerializer(notifications, many=True)
+    return Response(serializer.data)
+
+
+
+@api_view(['PATCH'])
+def mark_seller_notification_read(request, notif_id):
+    try:
+        notif = SellerNotification.objects.get(pk=notif_id)
+        notif.is_read = True
+        notif.save()
+        return Response({"detail": "Marked as read"}, status=status.HTTP_200_OK)
+    except SellerNotification.DoesNotExist:
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def seller_analytics(request):
+    """
+    Return analytics for the logged-in seller.
+    """
+    user = request.user
+    if not getattr(user, "is_seller", False):
+        return Response({"detail": "Only sellers may access analytics"}, status=status.HTTP_403_FORBIDDEN)
+
+    now = timezone.now()
+
+    # ---------------- summary metrics ----------------
+    total_active_ads = Ad.objects.filter(user=user, status='active').count()
+
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    total_views_this_month = ViewHistory.objects.filter(ad__user=user, viewed_at__gte=start_of_month).count()
+
+    messages_count = Message.objects.filter(chat__ad__user=user).count()
+    total_leads = Message.objects.filter(chat__ad__user=user).values('chat').distinct().count()
+
+    # ---------------- top ads by views ----------------
+    top_ads_qs = Ad.objects.filter(user=user).annotate(views=Count('viewhistory')).order_by('-views')[:6]
+    top_ads = []
+    for a in top_ads_qs:
+        # use Coalesce with explicit DecimalField output
+        earnings_agg = Order.objects.filter(ad=a).aggregate(
+            total=Coalesce(Sum('total'), Value(0), output_field=DecimalField())
+        )
+        total_earnings = float(earnings_agg.get('total') or 0.0)
+        top_ads.append({
+            "id": a.id,
+            "title": a.title,
+            "views": int(getattr(a, 'views', 0)),
+            "header_image_url": getattr(a, 'header_image_url', None),
+            "status": a.status,
+            "earnings": total_earnings,
+        })
+
+    # ---------------- monthly views (last 12 months) ----------------
+    # build last 12 months keys (YYYY-MM) deterministic
+    monthly_labels = []
+    for i in range(11, -1, -1):
+        tmp_month = now.month - i
+        tmp_year = now.year
+        while tmp_month <= 0:
+            tmp_month += 12
+            tmp_year -= 1
+        monthly_labels.append(f"{tmp_year}-{tmp_month:02d}")
+
+    monthly_views = OrderedDict((label, 0) for label in monthly_labels)
+
+    # group by month using TruncMonth
+    mv_qs = (
+        ViewHistory.objects
+        .filter(ad__user=user, viewed_at__gte=(now - datetime.timedelta(days=365)))
+        .annotate(m=TruncMonth('viewed_at'))
+        .values('m')
+        .annotate(cnt=Count('id'))
+        .order_by('m')
+    )
+    for row in mv_qs:
+        m = row['m']
+        label = m.strftime("%Y-%m")
+        if label in monthly_views:
+            monthly_views[label] = int(row['cnt'])
+
+    monthly_views_list = [{"month": k, "label": k, "views": v} for k, v in monthly_views.items()]
+
+    # ---------------- daily views (last 30 days) ----------------
+    daily_labels = []
+    for i in range(29, -1, -1):
+        d = (now - datetime.timedelta(days=i)).date()
+        daily_labels.append(d.isoformat())
+
+    daily_views = OrderedDict((label, 0) for label in daily_labels)
+
+    dv_qs = (
+        ViewHistory.objects
+        .filter(ad__user=user, viewed_at__date__gte=(now.date() - datetime.timedelta(days=29)))
+        .annotate(d=TruncDay('viewed_at'))
+        .values('d')
+        .annotate(cnt=Count('id'))
+        .order_by('d')
+    )
+    for row in dv_qs:
+        d = row['d'].date()
+        label = d.isoformat()
+        if label in daily_views:
+            daily_views[label] = int(row['cnt'])
+
+    daily_views_list = [{"date": k, "label": k, "views": v} for k, v in daily_views.items()]
+
+    # ---------------- monthly earnings (last 12 months) ----------------
+    monthly_earnings = OrderedDict((k, 0.0) for k in monthly_labels)
+    earnings_qs = (
+        Order.objects
+        .filter(ad__user=user, created_at__gte=(now - datetime.timedelta(days=365)))
+        .annotate(m=TruncMonth('created_at'))
+        .values('m')
+        .annotate(total=Coalesce(Sum('total'), Value(0), output_field=DecimalField()))
+        .order_by('m')
+    )
+    for row in earnings_qs:
+        label = row['m'].strftime("%Y-%m")
+        if label in monthly_earnings:
+            monthly_earnings[label] = float(row['total'] or 0.0)
+
+    monthly_earnings_list = [{"month": k, "label": k, "earnings": v} for k, v in monthly_earnings.items()]
+
+    # ---------------- orders by status ----------------
+    orders_by_status_qs = Order.objects.filter(ad__user=user).values('status').annotate(cnt=Count('id'))
+    orders_by_status = {r['status']: int(r['cnt']) for r in orders_by_status_qs}
+
+    # ---------------- recent messages ----------------
+    recent_messages_qs = (
+        Message.objects
+        .filter(chat__ad__user=user)
+        .select_related('sender', 'chat__ad')
+        .order_by('-created_at')[:5]
+    )
+    recent_messages = []
+    for msg in recent_messages_qs:
+        recent_messages.append({
+            "id": msg.id,
+            "text": msg.text,
+            "created_at": msg.created_at.isoformat(),
+            "sender_id": msg.sender.id if getattr(msg, 'sender', None) else None,
+            "sender_username": msg.sender.username if getattr(msg, 'sender', None) else "Unknown",
+            "ad_id": getattr(msg.chat.ad, 'id', None),
+            "ad_title": getattr(msg.chat.ad, 'title', None),
+        })
+
+    # ---------------- recent orders ----------------
+    recent_orders_qs = Order.objects.filter(ad__user=user).order_by('-created_at')[:6]
+    recent_orders = []
+    for o in recent_orders_qs:
+        recent_orders.append({
+            "id": o.id,
+            "ad_id": o.ad.id if getattr(o, 'ad', None) else None,
+            "ad_title": o.ad.title if getattr(o, 'ad', None) else "Deleted",
+            "total": float(o.total) if getattr(o, 'total', None) is not None else 0.0,
+            "status": o.status,
+            "created_at": o.created_at.isoformat(),
+        })
+
+    # ---------------- total earnings ----------------
+    agg = Order.objects.filter(ad__user=user).aggregate(total_earnings=Coalesce(Sum('total'), Value(0), output_field=DecimalField()))
+    earnings_total = float(agg.get('total_earnings') or 0.0)
+
+    # assemble response
+    data = {
+        "summary": {
+            "total_active_ads": int(total_active_ads),
+            "total_views_this_month": int(total_views_this_month),
+            "messages_count": int(messages_count),
+            "total_leads": int(total_leads),
+            "earnings_total": earnings_total,
+        },
+        "top_ads": top_ads,
+        "monthly_views_last_12": monthly_views_list,
+        "daily_views_last_30": daily_views_list,
+        "monthly_earnings_last_12": monthly_earnings_list,
+        "orders_by_status": orders_by_status,
+        "recent_messages": recent_messages,
+        "recent_orders": recent_orders,
+    }
+
+    return Response(data, status=status.HTTP_200_OK)

@@ -249,21 +249,6 @@ export default function BuyerAppBar({
                   <ListItemText primary="Dashboard" />
                 </ListItemButton>
 
-                <ListItemButton onClick={() => { navigate('/sellers/my-applications'); setIsDrawerOpen(false); }}>
-                  <ListItemIcon><CategoryIcon /></ListItemIcon>
-                  <ListItemText primary="Pending Ads" />
-                </ListItemButton>
-
-              <ListItemButton onClick={() => { navigate('/sellers/ads/list'); setIsDrawerOpen(false); }}>
-                <ListItemIcon><CategoryIcon /></ListItemIcon>
-                <ListItemText primary="Approved Ads" />
-              </ListItemButton>
-
-        <ListItemButton onClick={() => { navigate('/sellers/post-ad'); setIsDrawerOpen(false); }}>
-                <ListItemIcon><PostAddIcon /></ListItemIcon>
-                <ListItemText primary="Post an Ad" />
-              </ListItemButton>
-
               <ListItemButton onClick={() => { navigate('/sellers/orders'); setIsDrawerOpen(false); }}>
                 <ListItemIcon><ShoppingBagIcon /></ListItemIcon>
                 <ListItemText primary="Orders & Purchases" />
