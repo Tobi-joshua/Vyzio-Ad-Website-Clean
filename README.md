@@ -33,7 +33,7 @@ The main objective of the Vyzio.com project is to build a modern, intuitive, and
 
 - **Secure On-Site Payments**  
   Support for:  
-  - Credit/Debit Cards (Visa, MasterCard, etc.)  
+  - Stripe (Cards : Visa, MasterCard, etc.)  
   - Mobile Money (Orange, Moov, Mobicash)  
   - Crypto (BTC, ETH, USDT)
 

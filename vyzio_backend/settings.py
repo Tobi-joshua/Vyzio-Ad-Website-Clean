@@ -81,6 +81,10 @@ WSGI_APPLICATION = 'vyzio_backend.wsgi.application'
 
 """  REACT CONFIGURATION """
 
+STATIC_URL = 'static/'
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
 # Path to the React project folder (where package.json is located)
 # In your case, React lives inside "frontend/frontend"
 FRONTEND_DIR = BASE_DIR / "frontend" / "frontend" 
@@ -98,10 +102,8 @@ STATIC_ROOT = BASE_DIR / "static"
 # This makes sure React’s JS and CSS load correctly when served by Django.
 STATICFILES_DIRS = [
     FRONTEND_DIR / "build" / "static",
+    BASE_DIR / "vyzio_backend" / "static",  
 ]
-
-
-
 
 
 # Database
@@ -144,13 +146,6 @@ USE_I18N = True
 
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
-
-STATIC_URL = 'static/'
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 
 # Default primary key field type
