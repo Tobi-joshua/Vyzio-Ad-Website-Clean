@@ -51,90 +51,8 @@ The main objective of the Vyzio.com project is to build a modern, intuitive, and
 
 To create a self-sustaining ad platform where visitors browse freely, and advertisers pay to gain exposure — all while maintaining security, simplicity, and responsiveness.
 
----
 
-## Getting Started
-
-### Prerequisites
-
-- Python 3.10+  
-- Node.js & npm  
-- SQLite (default DB) or other supported database
-
-### Backend Setup (Django API)
-
-1. Clone the repository
-
-    ```bash
-    git clone https://github.com/yourusername/vyzio.git
-    cd vyzio
-    ```
-
-2. Create and activate a virtual environment
-
-    ```bash
-    python -m venv env
-    source env/bin/activate  # Linux/macOS
-    env\Scripts\activate     # Windows
-    ```
-
-3. Install dependencies
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4. Apply migrations
-
-    ```bash
-    python manage.py migrate
-    ```
-
-5. Create a superuser
-
-    ```bash
-    python manage.py createsuperuser
-    ```
-
-6. Run the development server
-
-    ```bash
-    python manage.py runserver
-    ```
-
-### Frontend Setup (React App)
-
-1. Navigate to the frontend directory
-
-    ```bash
-    cd frontend
-    ```
-
-2. Install dependencies
-
-    ```bash
-    npm install
-    ```
-
-3. Start the React development server
-
-    ```bash
-    npm start
-    ```
-
-React app will be at [http://localhost:3000](http://localhost:3000) and the Django API at [http://localhost:8000/api/](http://localhost:8000/api/).
-
----
-
-## Notes
-
-- Configure your `.env` or Django settings to match your environment and API URLs.
-- For production, build React app with `npm run build` and serve static files properly.
-- Set up payment gateways and other external services before going live.
-
----
-
-## Missing or Planned Features
+## Features
 
 | Feature                          | Model or Implementation Needed         | Notes                         |
 |---------------------------------|---------------------------------------|-------------------------------|
@@ -150,5 +68,3 @@ React app will be at [http://localhost:3000](http://localhost:3000) and the Djan
 | Comments or Contact Messages    | Optional `Message` model               | Enables user-to-user chat     |
 
 ---
-
-Feel free to customize or ask if you want me to generate more sections — like **Usage**, **API Documentation**, or **Deployment** instructions!
