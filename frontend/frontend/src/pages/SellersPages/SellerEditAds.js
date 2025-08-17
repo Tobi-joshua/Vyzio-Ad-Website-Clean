@@ -213,7 +213,7 @@ const saveMetadata = async () => {
     fd.append("currency", currency);
     fd.append("category_name", catName);
 
-    const res = await fetch(`${API_BASE_URL}/api/seller/ads/${id}/`, {
+    const res = await fetch(`${API_BASE_URL}/api/seller/edit/ads/${id}/`, {
       method: "PATCH",
       headers: getAuthHeaders(), 
       body: fd,
@@ -830,7 +830,7 @@ const saveMetadata = async () => {
 
       {step === 3 && (
         <Box>
-          <Alert severity="success">Ad ready to publish.</Alert>
+          <Alert severity="success">{adData?.is_active || adData?.status==='active' ? 'All Done,Please Go Back To Dashboard!' : 'Ad ready to publish.'}</Alert>
           <Box sx={{ mt: 2 }}>
             <Typography variant="subtitle1">{adData?.title}</Typography>
             <Typography variant="body2" color="text.secondary">{currency} {adData?.price ?? price}</Typography>
@@ -838,6 +838,9 @@ const saveMetadata = async () => {
 
           <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{ mt: 2 }}>
             <Button variant="outlined" onClick={() => navigate(-1)}>Back to dashboard</Button>
+           
+           {!adData?.is_active || !adData?.status === 'active' && 
+           <>
             <Button
               variant="contained"
               sx={{ bgcolor: accent }}
@@ -845,10 +848,12 @@ const saveMetadata = async () => {
               disabled={!adData || creatingPayment}
             >
               {creatingPayment ? <CircularProgress size={18} color="inherit" /> : "Pay & Publish"}
+              
             </Button>
             <Button variant="text" onClick={() => { showToast({ message: "Will publish later", severity: "info" }); navigate("/sellers/dashboard"); }}>
               Publish later
             </Button>
+           </>}
           </Stack>
         </Box>
       )}

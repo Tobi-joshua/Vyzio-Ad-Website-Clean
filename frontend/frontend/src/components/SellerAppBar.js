@@ -176,7 +176,7 @@ export default function BuyerAppBar({
               </Tooltip>
 
               <Tooltip title="Messages">
-                <IconButton onClick={() => navigate('/sellers/messages-list')} aria-label="messages" sx={{ color: iconColor }}>
+                <IconButton onClick={() => navigate('/sellers/messages')} aria-label="messages" sx={{ color: iconColor }}>
                   <Badge badgeContent={messagesCount} color="error">
                     <ChatIcon />
                   </Badge>

@@ -62,16 +62,16 @@ export default function SellerDashboard(){
     setReplyText("");
   };
 
-  // quick send using Fetch API — adapt URL to your backend
+  // quick send using Fetch API 
   const sendQuickReply = async (chatId) => {
     if (!replyText.trim()) return;
     setSending(true);
     try {
-      const res = await fetch(`/api/chats/${chatId}/messages/`, {
+      const res = await fetch(`${API_BASE_URL}/api/messages/send/`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: replyText }),
+        body: JSON.stringify({ text: replyText, chat_id: chatId, sender_id: userId }),
       });
       if (!res.ok) {
         // optionally show toast/snackbar

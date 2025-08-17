@@ -1291,7 +1291,7 @@ def seller_dashboard(request):
     conversion_rate = round(conversion_rate, 2)
 
     # --- recent messages (buyer inquiries) --- latest 10 messages for this seller's ads
-    recent_messages_qs = Message.objects.filter(chat__ad__user=user).select_related('sender', 'chat__ad').order_by('-created_at')[:5]
+    recent_messages_qs = Message.objects.filter(chat__ad__user=user).select_related('sender', 'chat__ad').order_by('-created_at')[:3]
     recent_messages = []
     for msg in recent_messages_qs:
         recent_messages.append({
@@ -1309,7 +1309,7 @@ def seller_dashboard(request):
     orders = []
     earnings_total = None
     try:
-        orders_qs = Order.objects.filter(ad__user=user).order_by('-created_at')[:5]
+        orders_qs = Order.objects.filter(ad__user=user).order_by('-created_at')[:4]
         orders = [
             {
                 "id": o.id,
@@ -1787,10 +1787,6 @@ def confirm_crypto_payment(request):
     return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-
-
-
-
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def delete_seller_ad(request, ad_id):
@@ -1829,7 +1825,7 @@ def ads_edit_detail(request, pk):
     if request.method in ("PUT", "PATCH"):
         # Use AdUpdateSerializer or AdCreateSerializer depending on your setup
         partial = (request.method == "PATCH")
-        serializer_class = AdCreateSerializer if "AdUpdateSerializer" in globals() else AdCreateSerializer
+        serializer_class = AdCreateSerializer
         serializer = serializer_class(ad, data=request.data, partial=partial, context={"request": request})
         serializer.is_valid(raise_exception=True)
 
@@ -1905,3 +1901,78 @@ def ads_header_delete(request, pk):
     ad.header_image = None
     ad.save(update_fields=["header_image"])
     return Response({"detail": "Header image removed", "ad_id": ad.pk}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def seller_chats(request, seller_id):
+    seller = get_object_or_404(User, id=seller_id, is_seller=True)
+    chats = Chat.objects.filter(seller=seller).order_by('-created_at')
+
+    chat_data = []
+    for chat in chats:
+        last_message = Message.objects.filter(chat=chat).order_by('-created_at').first()
+        unread_count = Message.objects.filter(
+            chat=chat,
+            is_read=False
+        ).exclude(sender=seller).count()
+
+        chat_data.append({
+            'chat_id': chat.id,
+            'ad_id': chat.ad.id,
+            'ad_title': chat.ad.title,
+            'buyer_name': chat.buyer.username,
+            'last_message': last_message.text if last_message else "",
+            'last_message_time': last_message.created_at if last_message else None,
+            'unread': unread_count > 0,
+            'unread_count': unread_count
+        })
+
+    return Response(chat_data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def seller_orders(request, seller_id):
+    seller = get_object_or_404(User, id=seller_id, is_seller=True)
+    orders = Order.objects.filter(ad__user=seller).order_by('-created_at')
+    orders_data = []
+    for order in orders:
+        orders_data.append({
+            'order_id': order.id,
+            'ad_id': order.ad.id if order.ad else None,
+            'ad_title': order.ad.title if order.ad else "Ad Deleted",
+            'total': str(order.total),
+            'status': order.status,
+            'created_at': order.created_at.strftime("%Y-%m-%d %H:%M"),
+        })
+
+    return Response(orders_data, status=status.HTTP_200_OK)
+
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def seller_order_update(request, order_id):
+    """
+    Seller can update the status of an order if they own the listing (order.ad.user == request.user).
+    Accepts JSON: { "status": "shipped" }.
+    """
+    order = get_object_or_404(Order, id=order_id)
+    ad = order.ad
+    if not ad or ad.user_id != request.user.id:
+        return Response({"detail": "Not allowed"}, status=status.HTTP_403_FORBIDDEN)
+
+    new_status = request.data.get("status")
+    if new_status not in dict(Order.STATUS_CHOICES).keys():
+        return Response({"detail": "Invalid status"}, status=status.HTTP_400_BAD_REQUEST)
+
+    order.status = new_status
+    order.save(update_fields=["status"])
+
+    return Response({
+        "order_id": order.id,
+        "ad_id": ad.id if ad else None,
+        "ad_title": ad.title if ad else "Ad Deleted",
+        "total": str(order.total),
+        "status": order.status,
+        "created_at": order.created_at.strftime("%Y-%m-%d %H:%M"),
+    }, status=status.HTTP_200_OK)
