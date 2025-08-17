@@ -26,7 +26,6 @@ const isAllowedSize = (file) => {
 const CURRENCY_OPTIONS = ["USD", "NGN", "CAD", "GBP", "EUR", "XEN"];
 const PAYMENT_METHODS = [
   { value: 'stripe', label: 'Stripe' },
-  { value: 'orange', label: 'Orange Pay' },
   { value: 'crypto', label: 'Crypto' },
 ];
 

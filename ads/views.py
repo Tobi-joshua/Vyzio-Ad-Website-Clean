@@ -19,6 +19,8 @@ import requests
 from django.utils.timezone import now
 from django.utils.html import strip_tags
 import unicodedata
+from decimal import Decimal, InvalidOperation
+
 """
 Django Core imports
 Django modules for authentication, messaging, HTTP responses, templates, ORM queries,
@@ -1449,134 +1451,161 @@ def generate_payment_reference():
 
 
 
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_ad_payment(request, pk):
     """
-    Create a Payment instance for the given ad.
-    Uses ListingPrice set by admin for the seller's currency
-    (user.preferred_currency or ad.currency fallback).
-
-    This endpoint only creates the Payment record;
-    provider integrations (Stripe, Orange, Crypto)
-    should be handled in confirm endpoints.
+    Create a Payment instance for the given ad, and (for Stripe) create a PaymentIntent.
+    Returns client_secret & publishable_key for the frontend when using Stripe.
+    For crypto (Coinbase Commerce) it will create a charge and return hosted_url + addresses.
     """
     user = request.user
-
-    # --- Validate Ad ownership ---
     try:
         ad = Ad.objects.get(pk=pk, user=user)
     except Ad.DoesNotExist:
-        return Response(
-            {"detail": "Ad not found or not owned by you."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Ad not found or not owned by you."}, status=status.HTTP_404_NOT_FOUND)
 
     if ad.status == "active":
-        return Response(
-            {"detail": "Ad already active."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"detail": "Ad already active."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # --- Resolve currency ---
-    currency = (
-        getattr(user, "preferred_currency", None) or ad.currency or ""
-    ).upper() or None
+    # determine currency/listing_fee (same logic as your earlier code)
+    currency = (getattr(user, "preferred_currency", None) or ad.currency or "").upper() or None
 
     lp = None
     if currency:
-        lp = (
-            ListingPrice.objects.filter(currency__iexact=currency, active=True)
-            .order_by("-is_default")
-            .first()
-        )
+        lp = ListingPrice.objects.filter(currency__iexact=currency, active=True).order_by("-is_default").first()
     if not lp:
         lp = ListingPrice.objects.filter(is_default=True, active=True).first()
         if lp:
             currency = (lp.currency or "USD").upper()
 
     listing_fee = lp.amount if lp else Decimal("0.00")
-    amount = Decimal(listing_fee).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    # ensure Decimal with 2 places
+    amount = Decimal(listing_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    # --- Generate unique reference ---
     payment_reference = generate_payment_reference()
 
-    # --- Normalize incoming method ---
+    # normalize incoming method
     method = (request.data.get("method") or "").lower()
-    publishable_key = None
-    client_secret_key = None
-
     if method in ("card", "stripe"):
         method_key = "stripe"
-
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        intent = stripe.PaymentIntent.create(
-            amount=int(amount * 100),
-            currency=(currency or "USD").lower(),
-            metadata={"payment_reference": payment_reference, "ad_id": ad.id},
-        )
-        publishable_key = settings.STRIPE_PUBLISHABLE_KEY
-        client_secret_key = intent.client_secret
-
-    elif method in ("mobile_money", "orange", "orange_pay"):
-        method_key = "orange"
-        publishable_key = "ORANGE_PUBLIC_KEY"
-        client_secret_key = "ORANGE_CLIENT_SECRET_KEY"
-
     elif method in ("crypto", "coinbase", "crypto_currency"):
         method_key = "crypto"
-        publishable_key = "CRYPTO_PUBLIC_KEY"
-        client_secret_key = "CRYPTO_CLIENT_SECRET_KEY"
-
     else:
         method_key = "stripe"
 
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        intent = stripe.PaymentIntent.create(
-            amount=int(amount * 100),
-            currency=(currency or "USD").lower(),
-            metadata={"payment_reference": payment_reference, "ad_id": ad.id},
-        )
-        publishable_key = settings.STRIPE_PUBLISHABLE_KEY
-        client_secret_key = intent.client_secret
+    # prepare variables to fill
+    client_secret = None
+    publishable_key = None
+    provider_payload = None
+    checkout_url = None
+    crypto_address = None
+    crypto_currency = None
 
-    # --- Create Payment record ---
-    with transaction.atomic():
-        payment = Payment.objects.create(
-            user=user,
-            ad=ad,
-            amount=amount,
-            method=method_key,
-            status="initiated",
-            currency=(currency or "USD"),
-            payment_reference=payment_reference,
-            publishable_key=publishable_key,
-            client_secret_key=client_secret_key,
-        )
+    # --- STRIPE branch: create PaymentIntent, return client_secret + publishable key ---
+    if method_key == "stripe":
+        stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", None)
+        if not stripe.api_key:
+            return Response({"detail": "Stripe not configured on server"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # mark ad as pending payment
-        ad.status = "draft"
-        ad.save(update_fields=["status"])
+        try:
+            intent = stripe.PaymentIntent.create(
+                amount=int((amount * Decimal(100)).quantize(Decimal('1'))),  # cents
+                currency=(currency or "USD").lower(),
+                metadata={"payment_reference": payment_reference, "ad_id": str(ad.id)},
+            )
+            client_secret = getattr(intent, "client_secret", None)
+            publishable_key = getattr(settings, "STRIPE_PUBLISHABLE_KEY", None)
+            # store a compact payload for debugging / future checks
+            provider_payload = {
+                "stripe_intent_id": intent.id,
+                "stripe_intent": intent.to_dict() if hasattr(intent, "to_dict") else None,
+            }
+        except Exception as e:
+            return Response({"detail": "Failed creating Stripe PaymentIntent", "error": str(e)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # --- Response payload ---
-    amount_smallest_unit = int(
-        (amount * Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    )
+    # --- CRYPTO branch: Coinbase Commerce charge creation ---
+    elif method_key == "crypto":
+        cb_key = getattr(settings, "COINBASE_COMMERCE_API_KEY", None)
+        if not cb_key:
+            return Response({"detail": "Crypto not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        headers = {"X-CC-Api-Key": cb_key, "X-CC-Version": "2018-03-22"}
+        payload = {
+            "name": f"Ad Payment #{ad.id}",
+            "description": f"Payment for ad {ad.title}",
+            "pricing_type": "fixed_price",
+            "local_price": {"amount": str(amount), "currency": (currency or "USD")},
+            "metadata": {"payment_reference": payment_reference, "ad_id": str(ad.id)},
+        }
+        try:
+            resp = requests.post("https://api.commerce.coinbase.com/charges",
+                                 json=payload, headers=headers, timeout=10)
+            resp.raise_for_status()
+            charge = resp.json().get("data", {}) or {}
+        except requests.RequestException as e:
+            return Response({"detail": "Failed creating crypto charge", "error": str(e)},
+                            status=status.HTTP_502_BAD_GATEWAY)
+
+        # Coinbase returns an official charge ID; use that as the canonical payment_reference
+        coinbase_id = charge.get("id")
+        if coinbase_id:
+            payment_reference = coinbase_id
+
+        provider_payload = charge
+        checkout_url = charge.get("hosted_url")  # URL to redirect user for payment
+        addresses = charge.get("addresses") or {}
+        # pick a single crypto address to show in the frontend (best-effort)
+        if isinstance(addresses, dict) and addresses:
+            # choose first available address (frontend can also read provider_payload.addresses)
+            first_coin = next(iter(addresses.keys()))
+            crypto_address = addresses.get(first_coin)
+            crypto_currency = first_coin
+
+    # --- persist a Payment row and update ad status ---
+    try:
+        with transaction.atomic():
+            payment = Payment.objects.create(
+                user=user,
+                ad=ad,
+                amount=amount,
+                method=method_key,
+                status="initiated",
+                currency=(currency or "USD"),
+                payment_reference=payment_reference,
+                provider_payload=provider_payload or None,
+                publishable_key=publishable_key or None,
+                client_secret_key=client_secret or None,
+                crypto_currency=(crypto_currency or None),
+                crypto_address=(crypto_address or None),
+            )
+            # mark ad as pending (draft)
+            ad.status = "draft"
+            ad.save(update_fields=["status"])
+    except Exception as e:
+        return Response({"detail": "Failed saving payment", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    amount_smallest_unit = int((amount * Decimal(100)).quantize(Decimal('1')))
+
     resp = {
         "payment_id": payment.id,
-        "payment_reference": payment_reference,
+        "payment_reference": payment.payment_reference,
+        "ad_id": ad.id,
         "amount": str(amount),
         "amount_smallest_unit": amount_smallest_unit,
         "currency": payment.currency,
         "method": method_key,
         "status": payment.status,
-        "publishable_key": publishable_key,
-        "client_secret_key": client_secret_key,
+        "client_secret_key": payment.client_secret_key,
+        "publishable_key": payment.publishable_key,
+        "checkout_url": checkout_url,
+        # convenience single-address field for the frontend plus full provider payload
+        "crypto_address": payment.crypto_address,
+        "provider_payload": payment.provider_payload,
         "notice": "Payment record created. Confirm via provider-specific endpoint.",
     }
-
     return Response(resp, status=status.HTTP_201_CREATED)
 
 
@@ -1587,41 +1616,54 @@ def confirm_stripe_payment(request):
     """
     Confirm a Stripe payment.
     Expects { payment_reference, ad_id } in body.
+    Accepts either your server payment_reference OR a Stripe PaymentIntent id (pi_...).
     """
     payment_reference = request.data.get("payment_reference")
     ad_id = request.data.get("ad_id")
 
-    try:
-        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
-    except Payment.DoesNotExist:
-        return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    if payment.status == "confirmed":
-        return Response({"detail": "Already confirmed", "status": payment.ad.status})
+    if not payment_reference or not ad_id:
+        return Response({"detail": "payment_reference and ad_id are required"}, status=status.HTTP_400_BAD_REQUEST)
 
     stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", None)
     if not stripe.api_key:
         return Response({"detail": "Stripe not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    # Try checkout session first
-    provider_payload = None
-    paid = False
+    payment = None
     try:
-        session = stripe.checkout.Session.retrieve(payment_reference)
-        provider_payload = session.to_dict()
-        if session.get("payment_intent"):
-            intent = stripe.PaymentIntent.retrieve(session.get("payment_intent"))
-            provider_payload["payment_intent"] = intent.to_dict()
+        payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
+    except Payment.DoesNotExist:
+        payment = Payment.objects.filter(ad_id=ad_id, user=request.user, provider_payload__stripe_intent_id=payment_reference).first()
+        if payment is None:
+            payment = Payment.objects.filter(ad_id=ad_id, user=request.user, provider_payload__icontains=payment_reference).first()
+
+    if not payment:
+        return Response({"detail": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # If already confirmed
+    if payment.status == "confirmed":
+        return Response({"detail": "Already confirmed", "status": payment.ad.status})
+
+    # determine stripe intent id to check
+    stripe_intent_id = None
+    if isinstance(payment.provider_payload, dict):
+        stripe_intent_id = payment.provider_payload.get("stripe_intent_id") or payment.provider_payload.get("payment_intent") or None
+
+    # If client passed a stripe id directly, use it
+    if payment_reference and payment_reference.startswith("pi_"):
+        stripe_intent_id = payment_reference
+
+    paid = False
+    provider_payload = payment.provider_payload or {}
+    try:
+        if stripe_intent_id:
+            intent = stripe.PaymentIntent.retrieve(stripe_intent_id)
+            provider_payload["stripe_intent"] = intent.to_dict() if hasattr(intent, "to_dict") else None
             paid = intent.status == "succeeded"
         else:
-            paid = session.get("payment_status") == "paid"
-    except stripe.error.InvalidRequestError:
-        try:
-            intent = stripe.PaymentIntent.retrieve(payment_reference)
-            provider_payload = intent.to_dict()
-            paid = intent.status == "succeeded"
-        except stripe.error.InvalidRequestError:
             paid = False
+    except stripe.error.InvalidRequestError:
+        paid = False
+    except Exception as e:
+        return Response({"detail": "Error checking Stripe", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     if paid:
         with transaction.atomic():
@@ -1632,7 +1674,9 @@ def confirm_stripe_payment(request):
             ad.status = "pending"
             ad.save(update_fields=["status"])
         return Response({"detail": "Payment confirmed", "status": ad.status})
-    return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 
@@ -1642,9 +1686,17 @@ def confirm_crypto_payment(request):
     """
     Confirm a Crypto payment (Coinbase Commerce).
     Expects { payment_reference, ad_id } in body.
+
+    Notes:
+    - This performs an on-demand check of the Coinbase Commerce charge.
+    - For production, prefer verifying via Coinbase webhooks (signed).
     """
     payment_reference = request.data.get("payment_reference")
     ad_id = request.data.get("ad_id")
+
+    if not payment_reference or not ad_id:
+        return Response({"detail": "payment_reference and ad_id are required."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     try:
         payment = Payment.objects.get(payment_reference=payment_reference, ad_id=ad_id, user=request.user)
@@ -1659,24 +1711,83 @@ def confirm_crypto_payment(request):
         return Response({"detail": "Crypto not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     headers = {"X-CC-Api-Key": cb_key, "X-CC-Version": "2018-03-22"}
-    resp = requests.get(f"https://api.commerce.coinbase.com/charges/{payment_reference}", headers=headers, timeout=10)
-    resp.raise_for_status()
-    data = resp.json().get("data", {})
-    timeline = data.get("timeline", [])
-    paid = any(t.get("status", "").lower() in ("completed", "confirmed") for t in timeline)
+    url = f"https://api.commerce.coinbase.com/charges/{payment_reference}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        logger.exception("Coinbase request failed for reference=%s ad=%s: %s", payment_reference, ad_id, exc)
+        return Response({"detail": "Failed to contact crypto provider", "error": str(exc)},
+                        status=status.HTTP_502_BAD_GATEWAY)
+
+    data = resp.json().get("data", {}) or {}
+
+    # Coinbase charge timeline (list of events) and/or payments list are good indicators
+    timeline = data.get("timeline", []) or []
+    payments = data.get("payments", []) or []
+
+    def _status_is_paid(status_str):
+        if not status_str:
+            return False
+        return status_str.lower() in ("completed", "confirmed", "paid")
+
+    # Check timeline for completed/confirmed events
+    paid_from_timeline = any(_status_is_paid(t.get("status")) for t in timeline)
+
+    # Also check individual payments array (some charges list payments with statuses)
+    paid_from_payments = any(_status_is_paid(p.get("status")) for p in payments)
+
+    paid = paid_from_timeline or paid_from_payments
+
+    # OPTIONAL: verify expected amount matches the charge's pricing (prevents tampering)
+    # This is recommended if you want extra safety. If you enable this, you should decide
+    # whether to require exact equality or allow small rounding differences.
+    try:
+        expected_amount = Decimal(payment.amount).quantize(Decimal("0.01"))
+        # Coinbase returns pricing info under `pricing` or `local_price` depending on create call
+        # We attempted to create with `local_price`, so check that first
+        cb_local = data.get("pricing", {}) or data.get("local_price", {}) or {}
+        cb_amount_str = None
+        # 'pricing' may include multiple entries (e.g. "local" vs "bitcoin"), try a few places:
+        if isinstance(cb_local, dict):
+            # pricing.local.amount or local_price.amount
+            cb_amount_str = cb_local.get("local", {}).get("amount") or cb_local.get("amount") or cb_local.get("local_price", {}).get("amount")
+        # fallback: check top-level 'pricing' -> 'local' -> 'amount'
+        if not cb_amount_str and isinstance(data.get("pricing"), dict):
+            cb_amount_str = data["pricing"].get("local", {}).get("amount")
+        if cb_amount_str:
+            cb_amount = Decimal(cb_amount_str).quantize(Decimal("0.01"))
+            if cb_amount != expected_amount:
+                # suspicious: amount mismatch
+                logger.warning("Coinbase charge amount mismatch for payment=%s: expected=%s coinbase=%s",
+                               payment_reference, expected_amount, cb_amount)
+                # don't immediately fail — you may choose to reject; here we still allow paid check to pass
+    except (InvalidOperation, KeyError, TypeError) as ex:
+        # if parsing fails, just log it and continue (do not block confirmation solely on this)
+        logger.debug("Could not parse coinbase/local price for %s: %s", payment_reference, ex)
 
     if paid:
-        with transaction.atomic():
-            payment.status = "confirmed"
-            payment.provider_payload = data
-            payment.save(update_fields=["status", "provider_payload"])
-            ad = payment.ad
-            ad.status = "active"
-            ad.save(update_fields=["status"])
+        try:
+            with transaction.atomic():
+                payment.status = "confirmed"
+                payment.provider_payload = data
+                payment.save(update_fields=["status", "provider_payload"])
+
+                ad = payment.ad
+                # decide on your business logic: set to 'active' or 'pending' for review.
+                # Here we set 'active' (you can change to 'pending' if you require moderation).
+                ad.status = "active"
+                ad.save(update_fields=["status"])
+        except Exception as exc:
+            logger.exception("Failed to mark payment confirmed (db error) for %s: %s", payment_reference, exc)
+            return Response({"detail": "Failed to update records after confirmation", "error": str(exc)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         return Response({"detail": "Payment confirmed", "status": ad.status})
+
+    # Not paid
     return Response({"detail": "Payment not successful"}, status=status.HTTP_400_BAD_REQUEST)
-
-
 
 
 

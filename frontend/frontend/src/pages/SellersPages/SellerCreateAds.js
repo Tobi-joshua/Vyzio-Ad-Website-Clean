@@ -37,7 +37,7 @@ export default function SellerCreateAdFormTwoStep() {
   const { name: catName } = useParams();
   const navigate = useNavigate();
   const showToast = useWebToast();
-  const { token, email } = useContext(SellerDashboardContext || {});
+  const { token } = useContext(SellerDashboardContext || {});
 
   // ===== header helpers =====
   const getAuthHeaders = () => {
@@ -121,6 +121,7 @@ export default function SellerCreateAdFormTwoStep() {
   };
 
   // automatically handle Stripe redirect returns on the same page
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const qp = new URLSearchParams(window.location.search);
     const payment_reference = qp.get("payment_reference");
@@ -128,7 +129,6 @@ export default function SellerCreateAdFormTwoStep() {
     // only proceed if both present
     if (!payment_reference || !ad_id) return;
 
-    // Avoid running multiple times
     if (redirectConfirming) return;
 
     (async () => {
@@ -156,16 +156,14 @@ export default function SellerCreateAdFormTwoStep() {
           const url = new URL(window.location.href);
           url.searchParams.delete("payment_reference");
           url.searchParams.delete("ad_id");
-          url.searchParams.delete("stripe_status");
           window.history.replaceState({}, document.title, url.pathname + url.search);
         } catch (e) {
-          // ignore replaceState errors
+          // ignore
         }
         setRedirectConfirming(false);
       }
     })();
-    // include the function deps that effect uses to satisfy eslint
-  }, [redirectConfirming /* confirmStripePaymentOnServer and showToast are stable in this component */]);
+  }, [redirectConfirming]);
 
   // file handlers
   const handleHeaderImageChange = (e) => {
@@ -260,7 +258,7 @@ export default function SellerCreateAdFormTwoStep() {
 
       const res = await fetch(`${API_BASE_URL}/api/seller/ads/${adId}/upload-images/`, {
         method: "POST",
-        headers: getAuthHeaders(), // <-- no Content-Type here
+        headers: getAuthHeaders(),
         body: fd,
         credentials: "include",
       });
@@ -296,6 +294,43 @@ export default function SellerCreateAdFormTwoStep() {
       setUploading(false);
     }
   };
+
+
+  // New: when user chooses a different payment method inside the modal/selector,
+// create a new server payment instance for that method (so crypto_address / checkout_url appears)
+const handlePaymentMethodChange = async (e) => {
+  const newMethod = e.target.value;
+  setPaymentMethod(newMethod);
+
+  // if there's no ad yet, nothing to create
+  const adId = paymentAdId || adData?.id;
+  if (!adId) return;
+
+  // if current paymentDetails already matches the chosen method and is for this ad, keep it
+  if (paymentDetails && paymentDetails.method === newMethod && isPaymentInitForAd(adId)) {
+    return;
+  }
+
+  // clear previous details to avoid showing stale info
+  setPaymentDetails(null);
+
+  try {
+    setCreatingPayment(true);
+    // create a new payment instance for the selected method
+    const pd = await createPaymentInstance(adId, newMethod);
+    // createPaymentInstance normalizes and sets paymentDetails already, but
+    // if it doesn't, do it here:
+    if (pd) setPaymentDetails(pd);
+    // keep the dialog open so user immediately sees crypto address / checkout
+    setPaymentDialogOpen(true);
+  } catch (err) {
+    console.error("Failed creating payment for method change:", err);
+    showToast({ message: err.message || "Failed to initialize payment for selected method", severity: "error" });
+  } finally {
+    setCreatingPayment(false);
+  }
+};
+
 
   // -------- create payment instance (server) --------
   // Note: we normalize returned fields so frontend can rely on client_secret_key & publishable_key fields.
@@ -407,7 +442,6 @@ export default function SellerCreateAdFormTwoStep() {
     if (!paymentDetails) return false;
     if (paymentAdId && Number(paymentAdId) === Number(adId)) return true;
     if (paymentDetails.ad_id && Number(paymentDetails.ad_id) === Number(adId)) return true;
-    // if paymentDetails contains payment_id or payment_reference assume it's for this ad (best-effort)
     return false;
   };
 
@@ -422,7 +456,7 @@ export default function SellerCreateAdFormTwoStep() {
     try { await uploadImagesToAd(adData?.id); } catch {};
   };
 
-  // handlePayNow now reuses existing paymentDetails if available, otherwise creates a payment instance
+  // handlePayNow reuses existing paymentDetails if available, otherwise creates a payment instance
   const handlePayNow = async () => {
     const adId = adData?.id;
     if (!adId) { showToast({ message: "No ad to pay for", severity: "error" }); return; }
@@ -444,7 +478,6 @@ export default function SellerCreateAdFormTwoStep() {
         setPaymentDialogOpen(true);
         return;
       }
-      // Otherwise fallback to creating a fresh payment instance
     }
 
     // No existing payment: create one and let createPaymentInstance open the dialog
@@ -452,7 +485,6 @@ export default function SellerCreateAdFormTwoStep() {
       setCreatingPayment(true);
       const pd = await createPaymentInstance(adId, paymentMethod);
       if (pd) {
-        // If server returned a checkout_url we may want to open it immediately
         if (pd.checkout_url) {
           window.open(pd.checkout_url, '_blank');
         } else if (pd.client_secret_key) {
@@ -493,14 +525,13 @@ export default function SellerCreateAdFormTwoStep() {
   const accent = "#6C5CE7";
 
   // -------- STRIPE INTEGRATION --------
-  // stripePromise uses server-supplied publishable_key if present; fallback to env var if needed
+  // stripePromise uses server-supplied publishable_key if present
   const stripePromise = useMemo(() => {
     const key = paymentDetails?.publishable_key || paymentDetails?.publishableKey;
     return key ? loadStripe(key) : null;
   }, [paymentDetails?.publishable_key, paymentDetails?.publishableKey]);
 
   // Inner component to render Stripe Payment Element and confirm inline
-  // NOTE: accept paymentReference & adId as props — avoids referencing undefined external variables
   function StripePaymentElement({ clientSecret, paymentReference, adId }) {
     const stripe = useStripe();
     const elements = useElements();
@@ -513,16 +544,14 @@ export default function SellerCreateAdFormTwoStep() {
       }
       setProcessing(true);
       try {
-        // build return url that points back to the same page with our server payment_reference & ad id
-        const serverPaymentReference = paymentReference || paymentDetails?.payment_reference || null;
-        const serverAdId = adId || adData?.id || null;
-        const returnUrl = `${window.location.origin}${window.location.pathname}?payment_reference=${encodeURIComponent(serverPaymentReference || "")}&ad_id=${encodeURIComponent(serverAdId || "")}`;
+        // build return url that points back to the current page with server payment_reference & ad id
+        const serverPaymentReference = paymentReference || paymentDetails?.payment_reference || "";
+        const serverAdId = adId || adData?.id || "";
+        const returnUrl = `${window.location.origin}${window.location.pathname}?payment_reference=${encodeURIComponent(serverPaymentReference)}&ad_id=${encodeURIComponent(serverAdId)}`;
 
         const result = await stripe.confirmPayment({
           elements,
-          confirmParams: {
-            return_url: returnUrl,
-          },
+          confirmParams: { return_url: returnUrl },
           redirect: "if_required",
         });
 
@@ -539,7 +568,7 @@ export default function SellerCreateAdFormTwoStep() {
           const serverReference = serverPaymentReference || paymentIntent.id;
           await handleManualConfirm(serverReference, "stripe");
         } else {
-          // If redirect happened, the existing useEffect will handle confirm on return.
+          // if redirect happened, the useEffect will handle server confirm after redirect
         }
       } catch (err) {
         console.error("Stripe confirm error:", err);
@@ -745,19 +774,20 @@ export default function SellerCreateAdFormTwoStep() {
           </Box>
 
           {/* Payment method */}
-          <FormControl fullWidth sx={{ mb: 2 }}>
-            <InputLabel id="payment-method-label">Select payment method</InputLabel>
-            <Select
-              labelId="payment-method-label"
-              value={paymentMethod}
-              label="Payment method"
-              onChange={(e) => setPaymentMethod(e.target.value)}
-            >
-              {PAYMENT_METHODS.map(m => (
-                <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+        <FormControl fullWidth sx={{ mb: 2 }}>
+  <InputLabel id="payment-method-label">Select payment method</InputLabel>
+  <Select
+    labelId="payment-method-label"
+    value={paymentMethod}
+    label="Payment method"
+    onChange={handlePaymentMethodChange}  
+  >
+    {PAYMENT_METHODS.map(m => (
+      <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+    ))}
+  </Select>
+</FormControl>
+
 
           {/* Provider or Stripe UI */}
           {paymentDetails && (
@@ -780,17 +810,20 @@ export default function SellerCreateAdFormTwoStep() {
                 </Elements>
               )}
 
-              {paymentDetails.crypto_address && (
-                <Box sx={{ mt: 2, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-                  <Typography variant="subtitle2">Send crypto to:</Typography>
-                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="body2" fontFamily="monospace">{paymentDetails.crypto_address}</Typography>
-                    <IconButton size="small" onClick={() => copyToClipboard(paymentDetails.crypto_address)}>
-                      <ContentCopyIcon fontSize="small" />
-                    </IconButton>
-                  </Box>
-                </Box>
-              )}
+{paymentDetails.crypto_address ? (
+  <Box>
+    <Typography variant="subtitle2">Send crypto to:</Typography>
+    <Typography variant="body2" fontFamily="monospace">{paymentDetails.crypto_address}</Typography>
+  </Box>
+) : paymentDetails.provider_payload?.addresses ? (
+  Object.entries(paymentDetails.provider_payload.addresses).map(([coin, addr]) => (
+    <Box key={coin} sx={{ mt: 1 }}>
+      <Typography variant="subtitle2">{coin.toUpperCase()}</Typography>
+      <Typography variant="body2" fontFamily="monospace">{addr}</Typography>
+    </Box>
+  ))
+) : null}
+
 
               {/* Manual reference / verify — shown only for non-Stripe providers (crypto) */}
               {paymentMethod !== "stripe" && (
@@ -865,22 +898,34 @@ export default function SellerCreateAdFormTwoStep() {
         </DialogContent>
       </Dialog>
 
-      {/* Success modal */}
-      <Dialog open={successModalOpen} onClose={() => handleSuccessClose(false)}>
-        <DialogTitle>{successIsActive ? "Payment received" : "Payment received — awaiting approval"}</DialogTitle>
-        <DialogContent>
-          <Typography>{successMessage}</Typography>
-          {!successIsActive && (
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-              Our team will review your ad. You will get an email when it is approved.
-            </Typography>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => handleSuccessClose(false)}>{successIsActive ? "Back to dashboard" : "OK"}</Button>
-          {successIsActive && <Button variant="contained" onClick={() => handleSuccessClose(true)}>View ad</Button>}
-        </DialogActions>
-      </Dialog>
+     {/* Success modal */}
+<Dialog open={successModalOpen} onClose={() => handleSuccessClose(false)}>
+  <DialogTitle>{successIsActive ? "Payment received" : "Payment received — awaiting approval"}</DialogTitle>
+  <DialogContent>
+    <Typography>{successMessage}</Typography>
+    {!successIsActive && (
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+        Our team will review your ad. You will get an email when it is approved.
+      </Typography>
+    )}
+  </DialogContent>
+  <DialogActions>
+    <Button
+      onClick={() => {
+        setSuccessModalOpen(false);
+        navigate("/sellers/ads/list");
+      }}
+    >
+      {successIsActive ? "Back to dashboard" : "OK"}
+    </Button>
+
+    {successIsActive && (
+      <Button variant="contained" onClick={() => handleSuccessClose(true)}>
+        View ad
+      </Button>
+    )}
+  </DialogActions>
+</Dialog>
     </Box>
   );
 }
