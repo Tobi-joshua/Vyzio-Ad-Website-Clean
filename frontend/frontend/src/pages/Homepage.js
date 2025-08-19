@@ -32,6 +32,7 @@ import VyzioHomePageHeroSection from '../components/HeaderHomePage';
 import HomePageStatsBar from "../components/HomePageStatsBar";
 import HowItWorksHome from "../components/HowItsWorkHome";
 import ClientReviewsCarousel from "../components/ClientReviewsCarousel";
+import {TypeFlare} from 'react-typeflare';
 
 
 export default function Homepage() {
@@ -64,8 +65,6 @@ export default function Homepage() {
      <HomePageStatsBar/>
      <HowItWorksHome/>
      <ClientReviewsCarousel/>
-
-      
     </Container>
   );
 }
