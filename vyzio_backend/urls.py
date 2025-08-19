@@ -6,16 +6,25 @@ from django.views.static import serve
 from django.views.generic import TemplateView
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('api/', include('ads.urls')),
-    re_path(r"^(?!api/|static/|media/|favicon.ico).*", TemplateView.as_view(template_name="index.html")),
+    path("admin/", admin.site.urls),
+    path("api/", include("ads.urls")),
 ]
 
+# ✅ Static & Media handling
 if settings.DEBUG:
-    # Serve media files during development
+    # Development: serve static & media files
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 else:
-    # Serve media files in production (usually handled by web server)
+    # Production: media via Django (static should be handled by web server)
     urlpatterns += [
-        re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
+        re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
     ]
+
+# ✅ Catch-all for React frontend (must always be LAST)
+urlpatterns += [
+    re_path(
+        r"^(?!api/|admin/|static/|media/|favicon.ico).*",
+        TemplateView.as_view(template_name="index.html"),
+    ),
+]

@@ -7,7 +7,6 @@ import requests
 from django.utils.encoding import smart_str
 from django.core.files.base import ContentFile
 import base64
-import imghdr
 import binascii
 User = get_user_model()
 
@@ -65,7 +64,7 @@ Serializes Ad model with nested related data:
 - computed fields: total ads posted by user, member since date, average rating
 """
 class AdsSerializer(serializers.ModelSerializer):
-    images = AdImageSerializer(many=True, read_only=True)  
+    images = AdImageSerializer(many=True, read_only=True)
     category = CategorySerializer(read_only=True)
     user_first_name = serializers.CharField(source='user.first_name', read_only=True)
     user_avatar_url = serializers.CharField(source='user.avatar_url', read_only=True)
@@ -89,7 +88,7 @@ class AdsSerializer(serializers.ModelSerializer):
 
     def get_average_rating(self, obj):
         return obj.user.reviews.aggregate(avg=Avg('rating'))['avg'] or 0
-    
+
     def get_member_since(self, obj):
         return obj.user.date_joined.date() if obj.user.date_joined else None
 
@@ -127,7 +126,7 @@ class Base64ImageField(serializers.ImageField):
             # Generate a random file name
             file_name = str(uuid.uuid4())[:12]  # 12-character random name
             # Get the file extension
-            file_extension = self.get_file_extension(decoded_file) or "jpg"  
+            file_extension = self.get_file_extension(decoded_file) or "jpg"
             complete_file_name = f"{file_name}.{file_extension}"
 
             # Create ContentFile instance
@@ -217,7 +216,7 @@ class UserSerializer(serializers.ModelSerializer):
                 first_name=validated_data['first_name'],
                 last_name=validated_data['last_name']
             )
-            user.set_password(validated_data['password1']) 
+            user.set_password(validated_data['password1'])
             user.is_active = True
             user.save()
             return user
@@ -282,7 +281,7 @@ class ChatSerializer(serializers.ModelSerializer):
 
 class SellerProfileSerializer(serializers.ModelSerializer):
     avatar = serializers.ImageField(required=False, allow_null=True)
-    
+
     class Meta:
         model = User
         fields = [
@@ -294,28 +293,28 @@ class SellerProfileSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'avatar_url', 'is_verified', 'kyc_verified', 'is_seller', 'is_buyer', 'rating',
         ]
-    
+
     def update(self, instance, validated_data):
         validated_data.pop('avatar_url', None)
         if 'avatar' in validated_data:
             if hasattr(instance, 'avatar_update'):
                 instance.avatar_update = True
-        
+
         required_fields = ['first_name', 'last_name', 'phone', 'date_of_birth', 'country']
         all_filled = all(validated_data.get(field) or getattr(instance, field, None) for field in required_fields)
-        
+
         if all_filled:
             if hasattr(instance, 'profile_completed') and not getattr(instance, 'profile_completed', False):
                 instance.profile_completed = True
-        
+
         instance.save()
-        
+
         return super().update(instance, validated_data)
 
 
 class BuyerProfileSerializer(serializers.ModelSerializer):
     avatar = serializers.ImageField(required=False, allow_null=True)
-    
+
     class Meta:
         model = User
         fields = [
@@ -327,7 +326,7 @@ class BuyerProfileSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'avatar_url', 'is_verified', 'kyc_verified', 'is_seller', 'is_buyer', 'rating',
         ]
-    
+
     def update(self, instance, validated_data):
         # Prevent direct update to avatar_url
         validated_data.pop('avatar_url', None)
@@ -336,17 +335,17 @@ class BuyerProfileSerializer(serializers.ModelSerializer):
         if 'avatar' in validated_data:
             if hasattr(instance, 'avatar_update'):
                 instance.avatar_update = True
-        
+
         # Check required profile fields
         required_fields = ['first_name', 'last_name', 'phone', 'date_of_birth', 'country']
         all_filled = all(validated_data.get(field) or getattr(instance, field, None) for field in required_fields)
-        
+
         if all_filled:
             if hasattr(instance, 'profile_completed') and not getattr(instance, 'profile_completed', False):
                 instance.profile_completed = True
-        
+
         instance.save()
-        
+
         return super().update(instance, validated_data)
 
 
@@ -416,7 +415,7 @@ class AdNestedSerializer(serializers.ModelSerializer):
 
 class ApplicationDetailsSerializer(serializers.ModelSerializer):
     applicant = serializers.HiddenField(default=serializers.CurrentUserDefault())
-    ad = AdNestedSerializer(read_only=True)  
+    ad = AdNestedSerializer(read_only=True)
     ad_id = serializers.PrimaryKeyRelatedField(
         queryset=Ad.objects.all(), source='ad', write_only=True
     )
@@ -426,7 +425,7 @@ class ApplicationDetailsSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "ad",
-            "ad_id", 
+            "ad_id",
             "applicant",
             "cover_letter",
             "resume",
@@ -472,7 +471,7 @@ class UserAccountSerializer(serializers.ModelSerializer):
             'country',
             'bio',
             'preferred_currency',
-            'avatar_update', 
+            'avatar_update',
         ]
         read_only_fields = ['id', 'username', 'email']
 
