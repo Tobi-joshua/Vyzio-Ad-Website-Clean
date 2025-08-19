@@ -79,15 +79,21 @@ const VyzioHomePageHeroSection = () => {
   }, [query, allAds]);
 
   // Hide suggestions if click outside search box
-  useEffect(() => {
-    const handleClickOutside = event => {
-      if (boxRef.current && !boxRef.current.contains(event.target)) {
-        setShowSuggestions(false);
-      }
-    };
-    document.addEventListener('pointerdown', handleClickOutside);
-    return () => document.removeEventListener('pointerdown', handleClickOutside);
-  }, []);
+useEffect(() => {
+  const handleClickOutside = (event) => {
+    // Only close if clicked truly outside the box
+    if (boxRef.current && !boxRef.current.contains(event.target)) {
+      setShowSuggestions(false);
+    }
+  };
+
+  // Use click instead of pointerdown for smoother typing
+  document.addEventListener("click", handleClickOutside);
+
+  return () => document.removeEventListener("click", handleClickOutside);
+}, []);
+
+
 
   // Navigate to ad details page
   const handleNavigate = (id) => {
@@ -117,7 +123,7 @@ useEffect(() => {
 
   const handleBrowseAdsClick = (event) => {
     party.confetti(event.currentTarget, { count: 10, spread: 15, size: 2 });
-    setTimeout(() => navigate('/ads'), 400);
+    setTimeout(() => navigate('/categories'), 400);
   };
 
   // Styled components for search bar
@@ -329,10 +335,11 @@ useEffect(() => {
               <StyledInputBase
                 placeholder="Search ads by title, category, city..."
                 inputProps={{ 'aria-label': 'search' }}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                 value={query}
+                 onChange={(e) => setQuery(e.target.value)}
                 sx={{ fontSize: '1rem', px: 2 }}
               />
+              
               <SearchIconWrapper>
                 <SearchIcon />
               </SearchIconWrapper>

@@ -243,8 +243,8 @@ export default function SellerDashboard() {
         </Stack>
 
         <Stack direction="row" spacing={1}>
-          <Button variant="outlined" onClick={() => setDrawerOpen(true)} startIcon={<ChatIcon />}>
-            Messages
+          <Button variant="outlined" onClick={() => navigate("/sellers/categories")} startIcon={<ChatIcon />}>
+            Post New Ads
           </Button>
           <Button variant="outlined" startIcon={<VisibilityIcon />} onClick={() => navigate("/sellers/analytics")}>
             Analytics

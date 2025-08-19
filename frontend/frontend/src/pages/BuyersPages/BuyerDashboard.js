@@ -247,7 +247,7 @@ export default function BuyerDashboard() {
                       borderRadius: 2,
                       bgcolor: "#fff",
                     }}
-                    onClick={() => navigate(`/ads/${ad.id}/details`)}
+                    onClick={() => navigate(`/buyers/ads/${ad.id}/details`)}
                   >
                     {ad.header_image_url ? (
                       <CardMedia

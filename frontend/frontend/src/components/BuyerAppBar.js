@@ -101,7 +101,7 @@ export default function BuyerAppBar({
     } finally {
       TokenStorage.clear();
       setIsDrawerOpen(false);
-      navigate('/login');
+      navigate('/');
     }
   };
 
